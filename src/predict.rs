@@ -21,11 +21,14 @@ cfg_if::cfg_if! {
   }
 }
 
-use crate::context::MAX_TX_SIZE;
+use crate::context::{
+  BlockOffset, TileBlockOffset, BLOCK_TO_PLANE_SHIFT, INTRA_MODES, MAX_TX_SIZE,
+};
 use crate::cpu_features::CpuFeatureLevel;
 use crate::encoder::FrameInvariants;
 use crate::frame::*;
 use crate::mc::*;
+use crate::palette::PaletteInfo;
 use crate::partition::*;
 use crate::tiling::*;
 use crate::transform::*;
@@ -79,6 +82,9 @@ pub enum PredictionMode {
   SMOOTH_V_PRED,
   SMOOTH_H_PRED,
   PAETH_PRED,
+  // Palette mode is treated specially in the AV1 spec,
+  // We can't add it to arrays like RAV1E_INTRA_MODES
+  PALETTE_PRED,
   UV_CFL_PRED,
   NEARESTMV,
   NEAR0MV,
@@ -152,7 +158,9 @@ impl PredictionMode {
     self, tile_rect: TileRect, dst: &mut PlaneRegionMut<'_, T>,
     tx_size: TxSize, bit_depth: usize, ac: &[i16], intra_param: IntraParam,
     ief_params: Option<IntraEdgeFilterParameters>,
-    edge_buf: &Aligned<[T; 4 * MAX_TX_SIZE + 1]>, cpu: CpuFeatureLevel,
+    edge_buf: &AlignedArray<[T; 4 * MAX_TX_SIZE + 1]>, cpu: CpuFeatureLevel,
+    palette: &mut Option<PaletteInfo<T>>, ts: &mut TileStateMut<'_, T>,
+    plane_idx: usize,
   ) {
     assert!(self.is_intra());
     let &Rect { x: frame_x, y: frame_y, .. } = dst.rect();
@@ -333,31 +341,6 @@ pub enum MotionMode {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
-pub enum PaletteSize {
-  TWO_COLORS,
-  THREE_COLORS,
-  FOUR_COLORS,
-  FIVE_COLORS,
-  SIX_COLORS,
-  SEVEN_COLORS,
-  EIGHT_COLORS,
-  PALETTE_SIZES,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
-pub enum PaletteColor {
-  PALETTE_COLOR_ONE,
-  PALETTE_COLOR_TWO,
-  PALETTE_COLOR_THREE,
-  PALETTE_COLOR_FOUR,
-  PALETTE_COLOR_FIVE,
-  PALETTE_COLOR_SIX,
-  PALETTE_COLOR_SEVEN,
-  PALETTE_COLOR_EIGHT,
-  PALETTE_COLORS,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
 pub enum FilterIntraMode {
   FILTER_DC_PRED,
   FILTER_V_PRED,
@@ -495,11 +478,15 @@ pub(crate) mod native {
   use super::*;
   use crate::context::MAX_TX_SIZE;
   use crate::cpu_features::CpuFeatureLevel;
+  use crate::palette::PaletteInfo;
+  use crate::predict::{
+    get_scaled_luma_q0, sm_weight_arrays, sm_weight_log2_scale, Dim,
+  };
   use crate::tiling::PlaneRegionMut;
   use crate::transform::TxSize;
-  use crate::util::round_shift;
-  use crate::util::Aligned;
+  use crate::util::{round_shift, Aligned, CastFromPrimitive};
   use crate::Pixel;
+  use itertools::Itertools;
   use std::mem::size_of;
 
   #[inline(always)]
@@ -580,6 +567,17 @@ pub(crate) mod native {
         height,
         bit_depth,
       ),
+      PredictionMode::PALETTE_PRED => {
+        let bo = TileBlockOffset(BlockOffset {
+          x: x >> BLOCK_TO_PLANE_SHIFT,
+          y: y >> BLOCK_TO_PLANE_SHIFT,
+        });
+        let above_palette =
+          bo.above().map(|above_bo| ts.block_palettes.get(&above_bo));
+        let left_palette =
+          bo.left().map(|left_bo| ts.block_palettes.get(&left_bo));
+        B::pred_palette(dst, palette, above_palette, left_palette, plane_idx)
+      }
       _ => unimplemented!(),
     }
   }
@@ -880,6 +878,102 @@ pub(crate) mod native {
   ) {
     pred_dc_top(output, above, left, width, height, bit_depth);
     pred_cfl_inner(output, ac, alpha, width, height, bit_depth);
+  }
+
+  fn pred_palette(
+    output: &mut PlaneRegionMut<'_, T>, palette: &mut Option<PaletteInfo<T>>,
+    above: &Option<PaletteInfo<T>>, left: &Option<PaletteInfo<T>>,
+    plane_idx: usize,
+  ) {
+    use crate::palette::*;
+
+    if Self::W > MAX_PALETTE_BLOCK_SIZE
+      || Self::H > MAX_PALETTE_BLOCK_SIZE
+      || Self::W * Self::H < MIN_PALETTE_SQUARE
+    {
+      // Can't use a palette for this block size
+      return;
+    }
+
+    let mut tmp_palette = palette.clone().unwrap_or_else(PaletteInfo::default);
+    let top_colors = count_colors(output)
+      .into_iter()
+      .enumerate()
+      .filter(|&(_, &count)| count > 0)
+      .sorted_by(|a, b| Ord::cmp(&b.0, &a.0))
+      .into_iter()
+      .take(PALETTE_MAX_SIZE)
+      .map(|(i, _)| i32::cast_from(i))
+      .collect::<Vec<_>>();
+    let num_colors = top_colors.len();
+
+    if num_colors < 2 || num_colors > 64 {
+      return;
+    }
+
+    const MAX_ITERATIONS: usize = 50;
+
+    let mut data_buf = [0i32; 2 * MAX_PALETTE_SQUARE];
+    for (i, pix) in output.rows_iter().flatten().enumerate() {
+      data_buf[i] = pix.as_();
+    }
+
+    let lower_bound: i32 =
+      data_buf.iter().take(Self::W * Self::H).min().copied().unwrap();
+    let upper_bound: i32 =
+      data_buf.iter().take(Self::W * Self::H).max().copied().unwrap();
+
+    let mut color_cache = get_palette_cache(output, above, left, plane_idx);
+    let mut centroids = [0i32; PALETTE_MAX_SIZE];
+
+    // Try the dominant colors directly.
+    // TODO: Try to avoid duplicate computation in cases
+    // where the dominant colors and the k-means results are similar.
+    for i in (2..=num_colors).rev() {
+      centroids.copy_from_slice(&top_colors[..i]);
+      palette_rd_y(
+        output,
+        &mut tmp_palette,
+        &mut color_cache,
+        &mut centroids,
+        i,
+        plane_idx,
+      );
+    }
+
+    // K-means clustering.
+    for i in (2..=num_colors).rev() {
+      if num_colors == PALETTE_MIN_SIZE {
+        // Special case: These colors automatically become the centroids.
+        debug_assert_eq!(num_colors, i);
+        debug_assert_eq!(num_colors, 2);
+        centroids[0] = lower_bound;
+        centroids[1] = upper_bound;
+      } else {
+        for j in 0..i {
+          centroids[j] = lower_bound
+            + (2 * j as i32 + 1) * (upper_bound - lower_bound) / i as i32 / 2;
+        }
+        k_means_dim_1(
+          &data_buf,
+          &mut centroids,
+          &mut tmp_palette.color_index_map,
+          Self::W * Self::H,
+          i,
+          MAX_ITERATIONS,
+        );
+      }
+      palette_rd_y(
+        output,
+        &mut tmp_palette,
+        &mut color_cache,
+        &mut centroids,
+        i,
+        plane_idx,
+      );
+    }
+
+    *palette = Some(tmp_palette);
   }
 
   #[allow(clippy::clone_double_ref)]

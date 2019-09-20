@@ -1278,7 +1278,7 @@ impl TileSuperBlockOffset {
 
 /// Absolute offset in blocks, where a block is defined
 /// to be an N*N square where N = (1 << BLOCK_TO_PLANE_SHIFT).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct BlockOffset {
   pub x: usize,
   pub y: usize,
@@ -1291,7 +1291,7 @@ pub struct PlaneBlockOffset(pub BlockOffset);
 
 /// Absolute offset in blocks inside a tile, where a block is defined
 /// to be an N*N square where N = (1 << BLOCK_TO_PLANE_SHIFT).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TileBlockOffset(pub BlockOffset);
 
 impl BlockOffset {
@@ -1331,6 +1331,20 @@ impl BlockOffset {
     debug_assert!(y >= 0);
 
     BlockOffset { x: x as usize, y: y as usize }
+  }
+
+  fn above(self) -> Option<BlockOffset> {
+    if self.y == 0 {
+      return None;
+    }
+    Some(BlockOffset { x: self.x, y: self.y - 1 })
+  }
+
+  fn left(self) -> Option<BlockOffset> {
+    if self.x == 0 {
+      return None;
+    }
+    Some(BlockOffset { x: self.x - 1, y: self.y })
   }
 }
 
@@ -1395,6 +1409,16 @@ impl TileBlockOffset {
     self, col_offset: isize, row_offset: isize,
   ) -> TileBlockOffset {
     Self(self.0.with_offset(col_offset, row_offset))
+  }
+
+  #[inline]
+  pub fn above(self) -> Option<Self> {
+    self.0.above().map(|above| Self(above))
+  }
+
+  #[inline]
+  pub fn left(self) -> Option<Self> {
+    self.0.left().map(|left| Self(left))
   }
 }
 

@@ -14,12 +14,14 @@ use crate::encoder::*;
 use crate::frame::*;
 use crate::lrf::{IntegralImageBuffer, SOLVE_IMAGE_SIZE};
 use crate::mc::MotionVector;
+use crate::palette::PaletteInfo;
 use crate::partition::{RefType, REF_FRAMES};
 use crate::predict::PredictionMode;
 use crate::quantize::*;
 use crate::rdo::*;
 use crate::stats::EncoderStats;
 use crate::util::*;
+use std::collections::BTreeMap;
 use std::ops::{Index, IndexMut};
 use std::sync::Arc;
 
@@ -43,7 +45,6 @@ use std::sync::Arc;
 ///
 /// Some others (like "rec") are written tile-wise, but must be accessible
 /// frame-wise once the tile views vanish (e.g. for deblocking).
-#[derive(Debug)]
 pub struct TileStateMut<'a, T: Pixel> {
   pub sbo: PlaneSuperBlockOffset,
   pub sb_size_log2: usize,
@@ -66,6 +67,7 @@ pub struct TileStateMut<'a, T: Pixel> {
   pub mvs: Vec<TileMotionVectorsMut<'a>>,
   pub coded_block_info: MiTileState,
   pub integral_buffer: IntegralImageBuffer,
+  pub block_palettes: BTreeMap<TileBlockOffset, PaletteInfo<T>>,
   pub enc_stats: EncoderStats,
 }
 
@@ -196,6 +198,7 @@ impl<'a, T: Pixel> TileStateMut<'a, T> {
         height >> MI_SIZE_LOG2,
       ),
       integral_buffer: IntegralImageBuffer::zeroed(SOLVE_IMAGE_SIZE),
+      block_palettes: BTreeMap::new(),
       enc_stats: EncoderStats::default(),
     }
   }

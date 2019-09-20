@@ -10,6 +10,7 @@
 #![allow(non_upper_case_globals)]
 
 use crate::context::*;
+use crate::palette::{PaletteColor, PaletteSize};
 use crate::partition::*;
 use crate::predict::*;
 use crate::transform::*;

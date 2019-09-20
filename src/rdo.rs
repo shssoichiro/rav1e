@@ -40,6 +40,8 @@ use crate::write_tx_tree;
 use crate::Tune;
 use crate::{encode_block_post_cdef, encode_block_pre_cdef};
 
+use crate::cpu_features::CpuFeatureLevel;
+use crate::palette::PaletteInfo;
 use crate::partition::PartitionType::*;
 use arrayvec::*;
 use itertools::izip;
@@ -75,14 +77,14 @@ impl RDOType {
 }
 
 #[derive(Clone)]
-pub struct PartitionGroupParameters {
+pub struct PartitionGroupParameters<T: Pixel> {
   pub rd_cost: f64,
   pub part_type: PartitionType,
-  pub part_modes: ArrayVec<[PartitionParameters; 4]>,
+  pub part_modes: ArrayVec<[PartitionParameters<T>; 4]>,
 }
 
-#[derive(Clone, Debug)]
-pub struct PartitionParameters {
+#[derive(Clone)]
+pub struct PartitionParameters<T: Pixel> {
   pub rd_cost: f64,
   pub bo: TileBlockOffset,
   pub bsize: BlockSize,
@@ -97,9 +99,10 @@ pub struct PartitionParameters {
   pub tx_size: TxSize,
   pub tx_type: TxType,
   pub sidx: u8,
+  pub palette: Option<PaletteInfo<T>>,
 }
 
-impl Default for PartitionParameters {
+impl<T: Pixel> Default for PartitionParameters<T> {
   fn default() -> Self {
     PartitionParameters {
       rd_cost: std::f64::MAX,
@@ -116,6 +119,7 @@ impl Default for PartitionParameters {
       tx_size: TxSize::TX_4X4,
       tx_type: TxType::DCT_DCT,
       sidx: 0,
+      palette: None,
     }
   }
 }
@@ -674,7 +678,7 @@ fn luma_chroma_mode_rdo<T: Pixel>(
   luma_mode: PredictionMode, fi: &FrameInvariants<T>, bsize: BlockSize,
   tile_bo: TileBlockOffset, ts: &mut TileStateMut<'_, T>,
   cw: &mut ContextWriter, rdo_type: RDOType,
-  cw_checkpoint: &ContextWriterCheckpoint, best: &mut PartitionParameters,
+  cw_checkpoint: &ContextWriterCheckpoint, best: &mut PartitionParameters<T>,
   mvs: [MotionVector; 2], ref_frames: [RefType; 2],
   mode_set_chroma: &[PredictionMode], luma_mode_is_intra: bool,
   mode_context: usize, mv_stack: &ArrayVec<[CandidateMV; 9]>,
@@ -801,7 +805,7 @@ pub fn rdo_mode_decision<T: Pixel>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
   cw: &mut ContextWriter, bsize: BlockSize, tile_bo: TileBlockOffset,
   pmv_idxs: (usize, usize), inter_cfg: &InterConfig,
-) -> PartitionParameters {
+) -> PartitionParameters<T> {
   let PlaneConfig { xdec, ydec, .. } = ts.input.planes[1].cfg;
 
   let cw_checkpoint = cw.checkpoint();
@@ -948,6 +952,7 @@ pub fn rdo_mode_decision<T: Pixel>(
     tx_size: best.tx_size,
     tx_type: best.tx_type,
     sidx: best.sidx,
+    palette: best.palette,
   }
 }
 
@@ -956,7 +961,7 @@ fn inter_frame_rdo_mode_decision<T: Pixel>(
   cw: &mut ContextWriter, bsize: BlockSize, tile_bo: TileBlockOffset,
   pmv_idxs: (usize, usize), inter_cfg: &InterConfig,
   cw_checkpoint: &ContextWriterCheckpoint, rdo_type: RDOType,
-) -> PartitionParameters {
+) -> PartitionParameters<T> {
   let mut best = PartitionParameters::default();
 
   // we can never have more than 7 reference frame sets
@@ -1160,8 +1165,8 @@ fn intra_frame_rdo_mode_decision<T: Pixel>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
   cw: &mut ContextWriter, bsize: BlockSize, tile_bo: TileBlockOffset,
   cw_checkpoint: &ContextWriterCheckpoint, rdo_type: RDOType,
-  mut best: PartitionParameters, is_chroma_block: bool,
-) -> PartitionParameters {
+  mut best: PartitionParameters<T>, is_chroma_block: bool,
+) -> PartitionParameters<T> {
   let num_modes_rdo: usize;
   let mut modes = ArrayVec::<[_; INTRA_MODES]>::new();
 
@@ -1400,6 +1405,9 @@ pub fn rdo_cfl_alpha<T: Pixel>(
           None,
           &edge_buf,
           fi.cpu_feature_level,
+          &mut None,
+          ts,
+          p,
         );
         sse_wxh(
           &input.subregion(Area::BlockStartingAt { bo: tile_bo.0 }),
@@ -1609,7 +1617,7 @@ fn rdo_partition_none<T: Pixel>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
   cw: &mut ContextWriter, bsize: BlockSize, tile_bo: TileBlockOffset,
   pmv_idx: usize, inter_cfg: &InterConfig,
-  child_modes: &mut ArrayVec<[PartitionParameters; 4]>,
+  child_modes: &mut ArrayVec<[PartitionParameters<T>; 4]>,
 ) -> Option<f64> {
   let pmv_inner_idx = if bsize > BlockSize::BLOCK_32X32 {
     0
@@ -1640,7 +1648,7 @@ fn rdo_partition_simple<T: Pixel, W: Writer>(
   cw: &mut ContextWriter, w_pre_cdef: &mut W, w_post_cdef: &mut W,
   bsize: BlockSize, tile_bo: TileBlockOffset, pmv_idx: usize,
   inter_cfg: &InterConfig, partition: PartitionType, rdo_type: RDOType,
-  best_rd: f64, child_modes: &mut ArrayVec<[PartitionParameters; 4]>,
+  best_rd: f64, child_modes: &mut ArrayVec<[PartitionParameters<T>; 4]>,
 ) -> Option<f64> {
   let subsize = bsize.subsize(partition);
 
@@ -1741,10 +1749,10 @@ pub fn rdo_partition_decision<T: Pixel, W: Writer>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
   cw: &mut ContextWriter, w_pre_cdef: &mut W, w_post_cdef: &mut W,
   bsize: BlockSize, tile_bo: TileBlockOffset,
-  cached_block: &PartitionGroupParameters, pmv_idx: usize,
+  cached_block: &PartitionGroupParameters<T>, pmv_idx: usize,
   partition_types: &[PartitionType], rdo_type: RDOType,
   inter_cfg: &InterConfig,
-) -> PartitionGroupParameters {
+) -> PartitionGroupParameters<T> {
   let mut best_partition = cached_block.part_type;
   let mut best_rd = cached_block.rd_cost;
   let mut best_pred_modes = cached_block.part_modes.clone();

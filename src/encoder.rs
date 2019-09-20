@@ -414,7 +414,6 @@ impl<T: Pixel> FrameState<T> {
     }
   }
 
-  #[cfg(feature = "bench")]
   #[inline(always)]
   pub fn as_tile_state_mut(&mut self) -> TileStateMut<'_, T> {
     let PlaneConfig { width, height, .. } = self.rec.planes[0].cfg;
@@ -1174,6 +1173,9 @@ pub fn encode_tx_block<T: Pixel>(
       ief_params,
       &edge_buf,
       fi.cpu_feature_level,
+      palette,
+      ts,
+      p,
     );
   }
 
@@ -2174,7 +2176,8 @@ pub fn encode_block_with_modes<T: Pixel>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
   cw: &mut ContextWriter, w_pre_cdef: &mut dyn Writer,
   w_post_cdef: &mut dyn Writer, bsize: BlockSize, tile_bo: TileBlockOffset,
-  mode_decision: &PartitionParameters, rdo_type: RDOType, record_stats: bool,
+  mode_decision: &PartitionParameters<T>, rdo_type: RDOType,
+  record_stats: bool,
 ) {
   let (mode_luma, mode_chroma) =
     (mode_decision.pred_mode_luma, mode_decision.pred_mode_chroma);
@@ -2235,7 +2238,7 @@ fn encode_partition_bottomup<T: Pixel, W: Writer>(
   cw: &mut ContextWriter, w_pre_cdef: &mut W, w_post_cdef: &mut W,
   bsize: BlockSize, tile_bo: TileBlockOffset, pmv_idx: usize,
   ref_rd_cost: f64, inter_cfg: &InterConfig,
-) -> PartitionGroupParameters {
+) -> PartitionGroupParameters<T> {
   let rdo_type = RDOType::PixelDistRealRate;
   let mut rd_cost = std::f64::MAX;
   let mut best_rd = std::f64::MAX;
@@ -2380,7 +2383,7 @@ fn encode_partition_bottomup<T: Pixel, W: Writer>(
       let subsize = bsize.subsize(partition);
       let hbsw = subsize.width_mi(); // Half the block size width in blocks
       let hbsh = subsize.height_mi(); // Half the block size height in blocks
-      let mut child_modes = ArrayVec::<[PartitionParameters; 4]>::new();
+      let mut child_modes = ArrayVec::<[PartitionParameters<T>; 4]>::new();
       rd_cost = 0.0;
 
       if bsize >= BlockSize::BLOCK_8X8 {
@@ -2528,7 +2531,7 @@ fn encode_partition_topdown<T: Pixel, W: Writer>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
   cw: &mut ContextWriter, w_pre_cdef: &mut W, w_post_cdef: &mut W,
   bsize: BlockSize, tile_bo: TileBlockOffset,
-  block_output: &Option<PartitionGroupParameters>, pmv_idx: usize,
+  block_output: &Option<PartitionGroupParameters<T>>, pmv_idx: usize,
   inter_cfg: &InterConfig,
 ) {
   if tile_bo.0.x >= cw.bc.blocks.cols() || tile_bo.0.y >= cw.bc.blocks.rows() {

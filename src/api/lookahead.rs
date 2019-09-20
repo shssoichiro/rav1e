@@ -86,13 +86,15 @@ pub(crate) fn estimate_intra_costs<T: Pixel>(
           height: IMPORTANCE_BLOCK_SIZE,
         },
         &mut plane_after_prediction_region,
-        tx_size,
-        bit_depth,
-        &[], // Not used by DC_PRED
-        IntraParam::None,
-        None, // Not used by DC_PRED
+        TxSize::TX_8X8,
+        fi.sequence.bit_depth,
+        &[], // Not used by DC_PRED.
+        0,   // Not used by DC_PRED.
         &edge_buf,
-        cpu_feature_level,
+        fi.cpu_feature_level,
+        &mut None, // Not used by DC_PRED.
+        ts,
+        0,
       );
 
       let plane_after_prediction_region =
