@@ -649,3 +649,79 @@ pub(crate) unsafe fn sgrproj_box_f_r2_avx2<T: Pixel>(
     assert_eq!(&f1[..w], &f1_ref[..]);
   }
 }
+
+#[cfg(test)]
+mod test {
+  use super::*;
+  use rand::random;
+  use std::iter;
+
+  #[test]
+  fn test_sgrproj_box_ab_r1_avx2() {
+    let mut opt_af = vec![0u32; 384];
+    let mut opt_bf = vec![0u32; 384];
+    for (a, b) in opt_af.iter_mut().zip(opt_bf.iter_mut()) {
+      *a = random::<u8>() as u32;
+      *b = random::<u8>() as u32;
+    }
+    let mut native_af = opt_af.clone();
+    let mut native_bf = opt_bf.clone();
+    let iimg_stride = 392;
+    let iimg: Vec<u32> =
+      iter::from_fn(|| Some(random::<u16>() as u32)).take(27831).collect();
+    let iimg_sq: Vec<u32> =
+      iimg.iter().copied().map(|iimg| iimg.pow(2)).collect();
+
+    sgrproj_box_ab_r1(
+      &mut opt_af,
+      &mut opt_bf,
+      &iimg,
+      &iimg_sq,
+      iimg_stride,
+      0,
+      32,
+      1295,
+      0,
+      CpuFeatureLevel::AVX2,
+    );
+    sgrproj_box_ab_r1(
+      &mut native_af,
+      &mut native_bf,
+      &iimg,
+      &iimg_sq,
+      iimg_stride,
+      0,
+      32,
+      1295,
+      0,
+      CpuFeatureLevel::NATIVE,
+    );
+
+    assert_eq!(&native_af, &opt_af);
+    assert_eq!(&native_bf, &opt_bf);
+  }
+  //
+  //  #[test]
+  //  fn test_sgrproj_box_ab_r2_avx2() {
+  //    sgrproj_box_ab_r2(CpuFeatureLevel::AVX2);
+  //    sgrproj_box_ab_r2(CpuFeatureLevel::NATIVE);
+  //  }
+  //
+  //  #[test]
+  //  fn test_sgrproj_box_f_r0_avx2() {
+  //    sgrproj_box_f_r0(CpuFeatureLevel::AVX2);
+  //    sgrproj_box_f_r0(CpuFeatureLevel::NATIVE);
+  //  }
+  //
+  //  #[test]
+  //  fn test_sgrproj_box_f_r1_avx2() {
+  //    sgrproj_box_f_r1(CpuFeatureLevel::AVX2);
+  //    sgrproj_box_f_r1(CpuFeatureLevel::NATIVE);
+  //  }
+  //
+  //  #[test]
+  //  fn test_sgrproj_box_f_r2_avx2() {
+  //    sgrproj_box_f_r2(CpuFeatureLevel::AVX2);
+  //    sgrproj_box_f_r2(CpuFeatureLevel::NATIVE);
+  //  }
+}
