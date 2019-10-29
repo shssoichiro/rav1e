@@ -1488,19 +1488,14 @@ pub fn encode_block_pre_cdef<T: Pixel>(
   cw.bc.cdef_coded
 }
 
-pub fn encode_block_post_cdef<T: Pixel>(
+pub(crate) fn encode_block_post_cdef_prep<T: Pixel>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
   cw: &mut ContextWriter, w: &mut dyn Writer, luma_mode: PredictionMode,
   chroma_mode: PredictionMode, ref_frames: [RefType; 2],
   mvs: [MotionVector; 2], bsize: BlockSize, tile_bo: TileBlockOffset,
-  skip: bool, cfl: CFLParams, tx_size: TxSize, tx_type: TxType,
-  mode_context: usize, mv_stack: &[CandidateMV], rdo_type: RDOType,
-  need_recon_pixel: bool, record_stats: bool,
-) -> (bool, ScaledDistortion) {
-  let is_inter = !luma_mode.is_intra();
-  if is_inter {
-    assert!(luma_mode == chroma_mode);
-  };
+  skip: bool, cfl: CFLParams, tx_size: TxSize, mode_context: usize,
+  mv_stack: &[CandidateMV], is_inter: bool,
+) {
   let sb_size = if fi.sequence.use_128x128_superblock {
     BlockSize::BLOCK_128X128
   } else {
@@ -1669,6 +1664,39 @@ pub fn encode_block_post_cdef<T: Pixel>(
       cw.bc.update_tx_size_context(tile_bo, bsize, tx_size, is_inter && skip);
     }
   }
+}
+
+pub fn encode_block_post_cdef<T: Pixel>(
+  fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
+  cw: &mut ContextWriter, w: &mut dyn Writer, luma_mode: PredictionMode,
+  chroma_mode: PredictionMode, ref_frames: [RefType; 2],
+  mvs: [MotionVector; 2], bsize: BlockSize, tile_bo: TileBlockOffset,
+  skip: bool, cfl: CFLParams, tx_size: TxSize, tx_type: TxType,
+  mode_context: usize, mv_stack: &[CandidateMV], rdo_type: RDOType,
+  need_recon_pixel: bool, record_stats: bool,
+) -> (bool, ScaledDistortion) {
+  let is_inter = !luma_mode.is_intra();
+  if is_inter {
+    assert!(luma_mode == chroma_mode);
+  };
+  encode_block_post_cdef_prep(
+    fi,
+    ts,
+    cw,
+    w,
+    luma_mode,
+    chroma_mode,
+    ref_frames,
+    mvs,
+    bsize,
+    tile_bo,
+    skip,
+    cfl,
+    tx_size,
+    mode_context,
+    mv_stack,
+    is_inter,
+  );
 
   if record_stats {
     *ts.enc_stats.block_size_counts.entry(bsize).or_insert(0) += 1;

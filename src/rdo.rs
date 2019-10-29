@@ -38,13 +38,16 @@ use crate::util::{AlignedArray, CastFromPrimitive, Pixel};
 use crate::write_tx_blocks;
 use crate::write_tx_tree;
 use crate::Tune;
-use crate::{encode_block_post_cdef, encode_block_pre_cdef};
+use crate::{
+  encode_block_post_cdef, encode_block_post_cdef_prep, encode_block_pre_cdef,
+};
 
 use crate::cpu_features::CpuFeatureLevel;
 use crate::partition::PartitionType::*;
 use arrayvec::*;
 use serde_derive::{Deserialize, Serialize};
 use std;
+use std::iter::Iterator;
 use std::vec::Vec;
 
 #[derive(Copy, Clone, PartialEq)]
@@ -631,153 +634,302 @@ pub fn rdo_tx_size_type<T: Pixel>(
 }
 
 #[inline]
-fn luma_chroma_mode_rdo<T: Pixel>(
+fn get_sidx_range<T: Pixel>(
+  fi: &FrameInvariants<T>, ts: &TileStateMut<'_, T>, tile_bo: TileBlockOffset,
+  bsize: BlockSize,
+) -> impl Iterator<Item = u8> {
+  // If quantizer RDO is disabled, sidx isn't coded.
+  if !fi.config.speed_settings.quantizer_rdo {
+    let importance =
+      compute_mean_importance(fi, ts.to_frame_block_offset(tile_bo), bsize);
+    // Chosen based on the RDO segment ID statistics for speed 2 on the DOTA2
+    // clip. More precisely:
+    // - Mean importance and the corresponding best sidx chosen by RDO were
+    //   dumped from encoding the DOTA2 clip on --speed 2.
+    // - The values were plotted in a logarithmic 2D histogram.
+    // - Based on that, the value below were chosen.
+    let heuristic_sidx = match importance {
+      x if x >= 0. && x < 2. => 1,
+      x if x >= 2. && x < 4. => 0,
+      x if x >= 4. => 2,
+      _ => unreachable!(),
+    };
+    // prevent the highest sidx from bringing us into lossless
+    if fi.base_q_idx as i16
+      + ts.segmentation.data[heuristic_sidx as usize]
+        [SegLvl::SEG_LVL_ALT_Q as usize]
+      < 2
+    {
+      0..=0
+    } else {
+      heuristic_sidx..=heuristic_sidx
+    }
+  } else if fi.base_q_idx as i16
+    + ts.segmentation.data[2][SegLvl::SEG_LVL_ALT_Q as usize]
+    < 2
+  {
+    0..=1
+  } else {
+    0..=2
+  }
+}
+
+#[inline]
+fn intra_luma_chroma_mode_rdo<T: Pixel>(
   luma_mode: PredictionMode, fi: &FrameInvariants<T>, bsize: BlockSize,
   tile_bo: TileBlockOffset, ts: &mut TileStateMut<'_, T>,
   cw: &mut ContextWriter, rdo_type: RDOType,
   cw_checkpoint: &ContextWriterCheckpoint, best: &mut PartitionParameters,
   mvs: [MotionVector; 2], ref_frames: [RefType; 2],
-  mode_set_chroma: &[PredictionMode], luma_mode_is_intra: bool,
-  mode_context: usize, mv_stack: &ArrayVec<[CandidateMV; 9]>,
+  mode_set_chroma: &[PredictionMode], mode_context: usize,
+  mv_stack: &ArrayVec<[CandidateMV; 9]>,
 ) {
   let PlaneConfig { xdec, ydec, .. } = ts.input.planes[1].cfg;
 
   let is_chroma_block = has_chroma(tile_bo, bsize, xdec, ydec);
 
   // Find the best chroma prediction mode for the current luma prediction mode
-  let mut chroma_rdo = |skip: bool| -> bool {
-    let mut zero_distortion = false;
+  for sidx in get_sidx_range(fi, ts, tile_bo, bsize) {
+    cw.bc.blocks.set_segmentation_idx(tile_bo, bsize, sidx);
 
-    // If skip is true, sidx is not coded.
-    // If quantizer RDO is disabled, sidx isn't coded either.
-    let sidx_range = if skip {
-      0..=0
-    } else if !fi.config.speed_settings.quantizer_rdo {
-      let importance =
-        compute_mean_importance(fi, ts.to_frame_block_offset(tile_bo), bsize);
-      // Chosen based on the RDO segment ID statistics for speed 2 on the DOTA2
-      // clip. More precisely:
-      // - Mean importance and the corresponding best sidx chosen by RDO were
-      //   dumped from encoding the DOTA2 clip on --speed 2.
-      // - The values were plotted in a logarithmic 2D histogram.
-      // - Based on that, the value below were chosen.
-      let heuristic_sidx = match importance {
-        x if x >= 0. && x < 2. => 1,
-        x if x >= 2. && x < 4. => 0,
-        x if x >= 4. => 2,
-        _ => unreachable!(),
-      };
-      // prevent the highest sidx from bringing us into lossless
-      if fi.base_q_idx as i16
-        + ts.segmentation.data[heuristic_sidx as usize]
-          [SegLvl::SEG_LVL_ALT_Q as usize]
-        < 2
-      {
-        0..=0
-      } else {
-        heuristic_sidx..=heuristic_sidx
+    let (tx_size, tx_type) = rdo_tx_size_type(
+      fi, ts, cw, bsize, tile_bo, luma_mode, ref_frames, mvs, false,
+    );
+    for &chroma_mode in mode_set_chroma.iter() {
+      let wr = &mut WriterCounter::new();
+      let tell = wr.tell_frac();
+
+      if bsize >= BlockSize::BLOCK_8X8 && bsize.is_sqr() {
+        cw.write_partition(wr, tile_bo, PartitionType::PARTITION_NONE, bsize);
       }
-    } else if fi.base_q_idx as i16
-      + ts.segmentation.data[2][SegLvl::SEG_LVL_ALT_Q as usize]
-      < 2
-    {
-      0..=1
-    } else {
-      0..=2
-    };
 
-    for sidx in sidx_range {
-      cw.bc.blocks.set_segmentation_idx(tile_bo, bsize, sidx);
+      // TODO(yushin): luma and chroma would have different decision based on chroma format
+      let need_recon_pixel = tx_size.block_size() != bsize;
 
-      let (tx_size, tx_type) = rdo_tx_size_type(
-        fi, ts, cw, bsize, tile_bo, luma_mode, ref_frames, mvs, skip,
+      encode_block_pre_cdef(&fi.sequence, ts, cw, wr, bsize, tile_bo, false);
+      let (has_coeff, tx_dist) = encode_block_post_cdef(
+        fi,
+        ts,
+        cw,
+        wr,
+        luma_mode,
+        chroma_mode,
+        ref_frames,
+        mvs,
+        bsize,
+        tile_bo,
+        false,
+        CFLParams::default(),
+        tx_size,
+        tx_type,
+        mode_context,
+        &mv_stack,
+        rdo_type,
+        need_recon_pixel,
+        false,
       );
-      for &chroma_mode in mode_set_chroma.iter() {
-        let wr = &mut WriterCounter::new();
-        let tell = wr.tell_frac();
 
-        if bsize >= BlockSize::BLOCK_8X8 && bsize.is_sqr() {
-          cw.write_partition(
-            wr,
-            tile_bo,
-            PartitionType::PARTITION_NONE,
-            bsize,
-          );
-        }
-
-        // TODO(yushin): luma and chroma would have different decision based on chroma format
-        let need_recon_pixel =
-          luma_mode_is_intra && tx_size.block_size() != bsize;
-
-        encode_block_pre_cdef(&fi.sequence, ts, cw, wr, bsize, tile_bo, skip);
-        let (has_coeff, tx_dist) = encode_block_post_cdef(
+      let rate = wr.tell_frac() - tell;
+      let distortion = if fi.use_tx_domain_distortion && !need_recon_pixel {
+        compute_tx_distortion(
           fi,
           ts,
-          cw,
-          wr,
-          luma_mode,
-          chroma_mode,
-          ref_frames,
-          mvs,
           bsize,
+          is_chroma_block,
           tile_bo,
-          skip,
-          CFLParams::default(),
-          tx_size,
-          tx_type,
-          mode_context,
-          &mv_stack,
-          rdo_type,
-          need_recon_pixel,
+          tx_dist,
           false,
-        );
-
-        let rate = wr.tell_frac() - tell;
-        let distortion = if fi.use_tx_domain_distortion && !need_recon_pixel {
-          compute_tx_distortion(
-            fi,
-            ts,
-            bsize,
-            is_chroma_block,
-            tile_bo,
-            tx_dist,
-            skip,
-            false,
-          )
-        } else {
-          compute_distortion(fi, ts, bsize, is_chroma_block, tile_bo, false)
-        };
-        let is_zero_dist = distortion.0 == 0;
-        let rd = compute_rd_cost(fi, rate, distortion);
-        if rd < best.rd_cost {
-          //if rd < best.rd_cost || luma_mode == PredictionMode::NEW_NEWMV {
-          best.rd_cost = rd;
-          best.pred_mode_luma = luma_mode;
-          best.pred_mode_chroma = chroma_mode;
-          best.ref_frames = ref_frames;
-          best.mvs = mvs;
-          best.skip = skip;
-          best.has_coeff = has_coeff;
-          best.tx_size = tx_size;
-          best.tx_type = tx_type;
-          best.sidx = sidx;
-          zero_distortion = is_zero_dist;
-        }
-
-        cw.rollback(cw_checkpoint);
+          false,
+        )
+      } else {
+        compute_distortion(fi, ts, bsize, is_chroma_block, tile_bo, false)
+      };
+      let rd = compute_rd_cost(fi, rate, distortion);
+      if rd < best.rd_cost {
+        best.rd_cost = rd;
+        best.pred_mode_luma = luma_mode;
+        best.pred_mode_chroma = chroma_mode;
+        best.ref_frames = ref_frames;
+        best.mvs = mvs;
+        best.skip = false;
+        best.has_coeff = has_coeff;
+        best.tx_size = tx_size;
+        best.tx_type = tx_type;
+        best.sidx = sidx;
       }
+
+      cw.rollback(cw_checkpoint);
     }
-
-    zero_distortion
-  };
-
-  // Don't skip when using intra modes
-  let zero_distortion =
-    if !luma_mode_is_intra { chroma_rdo(true) } else { false };
-  // early skip
-  if !zero_distortion {
-    chroma_rdo(false);
   }
+}
+
+#[inline]
+fn inter_luma_chroma_mode_rdo<T: Pixel>(
+  luma_mode: PredictionMode, fi: &FrameInvariants<T>, bsize: BlockSize,
+  tile_bo: TileBlockOffset, ts: &mut TileStateMut<'_, T>,
+  cw: &mut ContextWriter, rdo_type: RDOType,
+  cw_checkpoint: &ContextWriterCheckpoint, best: &mut PartitionParameters,
+  mvs: [MotionVector; 2], ref_frames: [RefType; 2], luma_mode_is_intra: bool,
+  mode_context: usize, mv_stack: &ArrayVec<[CandidateMV; 9]>,
+) {
+  if luma_mode_is_intra {
+    return intra_luma_chroma_mode_rdo(
+      luma_mode,
+      fi,
+      bsize,
+      tile_bo,
+      ts,
+      cw,
+      rdo_type,
+      cw_checkpoint,
+      best,
+      mvs,
+      ref_frames,
+      &[luma_mode],
+      mode_context,
+      mv_stack,
+    );
+  }
+
+  let PlaneConfig { xdec, ydec, .. } = ts.input.planes[1].cfg;
+  let is_chroma_block = has_chroma(tile_bo, bsize, xdec, ydec);
+
+  // Perform prediction
+  let (tx_size, tx_type) = rdo_tx_size_type(
+    fi, ts, cw, bsize, tile_bo, luma_mode, ref_frames, mvs, false,
+  );
+  motion_compensate(
+    fi, ts, cw, luma_mode, ref_frames, mvs, bsize, tile_bo, false,
+  );
+  let pred_checkpoint = cw.checkpoint();
+
+  // Compute the RDO cost for the skip case
+  let zero_distortion = compute_inter_mode_rdo_cost(
+    luma_mode,
+    fi,
+    bsize,
+    tile_bo,
+    ts,
+    cw,
+    &pred_checkpoint,
+    rdo_type,
+    best,
+    mvs,
+    ref_frames,
+    tx_size,
+    tx_type,
+    is_chroma_block,
+    mode_context,
+    mv_stack,
+    0,
+    true,
+  );
+  if zero_distortion {
+    cw.rollback(cw_checkpoint);
+    return;
+  }
+
+  // Compute RDO cost for non-skip case
+  let sidx_range = get_sidx_range(fi, ts, tile_bo, bsize);
+  for sidx in sidx_range {
+    compute_inter_mode_rdo_cost(
+      luma_mode,
+      fi,
+      bsize,
+      tile_bo,
+      ts,
+      cw,
+      &pred_checkpoint,
+      rdo_type,
+      best,
+      mvs,
+      ref_frames,
+      tx_size,
+      tx_type,
+      is_chroma_block,
+      mode_context,
+      mv_stack,
+      sidx,
+      false,
+    );
+  }
+  cw.rollback(cw_checkpoint);
+}
+
+// Returns `true` if zero distortion
+fn compute_inter_mode_rdo_cost<T: Pixel>(
+  luma_mode: PredictionMode, fi: &FrameInvariants<T>, bsize: BlockSize,
+  tile_bo: TileBlockOffset, ts: &mut TileStateMut<'_, T>,
+  cw: &mut ContextWriter, pred_checkpoint: &ContextWriterCheckpoint,
+  rdo_type: RDOType, best: &mut PartitionParameters, mvs: [MotionVector; 2],
+  ref_frames: [RefType; 2], tx_size: TxSize, tx_type: TxType,
+  is_chroma_block: bool, mode_context: usize,
+  mv_stack: &ArrayVec<[CandidateMV; 9]>, sidx: u8, skip: bool,
+) -> bool {
+  cw.bc.blocks.set_segmentation_idx(tile_bo, bsize, sidx);
+
+  let wr = &mut WriterCounter::new();
+  let tell = wr.tell_frac();
+
+  if bsize >= BlockSize::BLOCK_8X8 && bsize.is_sqr() {
+    cw.write_partition(wr, tile_bo, PartitionType::PARTITION_NONE, bsize);
+  }
+
+  encode_block_pre_cdef(&fi.sequence, ts, cw, wr, bsize, tile_bo, skip);
+  encode_block_post_cdef_prep(
+    fi,
+    ts,
+    cw,
+    wr,
+    luma_mode,
+    luma_mode,
+    ref_frames,
+    mvs,
+    bsize,
+    tile_bo,
+    skip,
+    CFLParams::default(),
+    tx_size,
+    mode_context,
+    mv_stack,
+    !luma_mode.is_intra(),
+  );
+  let (has_coeff, tx_dist) = write_tx_tree(
+    fi, ts, cw, wr, luma_mode, tile_bo, bsize, tx_size, tx_type, skip, false,
+    rdo_type, false,
+  );
+
+  let rate = wr.tell_frac() - tell;
+  let distortion = if fi.use_tx_domain_distortion {
+    compute_tx_distortion(
+      fi,
+      ts,
+      bsize,
+      is_chroma_block,
+      tile_bo,
+      tx_dist,
+      skip,
+      false,
+    )
+  } else {
+    compute_distortion(fi, ts, bsize, is_chroma_block, tile_bo, false)
+  };
+  let is_zero_dist = distortion.0 == 0;
+  let rd = compute_rd_cost(fi, rate, distortion);
+  if rd < best.rd_cost {
+    best.rd_cost = rd;
+    best.pred_mode_luma = luma_mode;
+    best.pred_mode_chroma = luma_mode;
+    best.ref_frames = ref_frames;
+    best.mvs = mvs;
+    best.skip = skip;
+    best.has_coeff = has_coeff;
+    best.tx_size = tx_size;
+    best.tx_type = tx_type;
+    best.sidx = sidx;
+  }
+  cw.rollback(pred_checkpoint);
+  is_zero_dist
 }
 
 // RDO-based mode decision
@@ -1117,9 +1269,8 @@ fn inter_frame_rdo_mode_decision<T: Pixel>(
         unimplemented!();
       }
     };
-    let mode_set_chroma = ArrayVec::from([luma_mode]);
 
-    luma_chroma_mode_rdo(
+    inter_luma_chroma_mode_rdo(
       luma_mode,
       fi,
       bsize,
@@ -1131,7 +1282,6 @@ fn inter_frame_rdo_mode_decision<T: Pixel>(
       &mut best,
       mvs,
       ref_frames_set[i],
-      &mode_set_chroma,
       false,
       mode_contexts[i],
       &mv_stacks[i],
@@ -1273,7 +1423,7 @@ fn intra_frame_rdo_mode_decision<T: Pixel>(
     if is_chroma_block && luma_mode != PredictionMode::DC_PRED {
       mode_set_chroma.push(PredictionMode::DC_PRED);
     }
-    luma_chroma_mode_rdo(
+    intra_luma_chroma_mode_rdo(
       luma_mode,
       fi,
       bsize,
@@ -1286,7 +1436,6 @@ fn intra_frame_rdo_mode_decision<T: Pixel>(
       mvs,
       ref_frames,
       &mode_set_chroma,
-      true,
       0,
       &ArrayVec::<[CandidateMV; 9]>::new(),
     );
