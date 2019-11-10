@@ -1714,7 +1714,7 @@ impl TxfmType {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Txfm2DFlipCfg {
+pub(crate) struct Txfm2DFlipCfg {
   tx_size: TxSize,
   /// Flip upside down
   ud_flip: bool,
@@ -1750,7 +1750,7 @@ impl Txfm2DFlipCfg {
   }
 
   /// Determine the flip config, returning (ud_flip, lr_flip)
-  fn get_flip_cfg(tx_type: TxType) -> (bool, bool) {
+  pub(crate) fn get_flip_cfg(tx_type: TxType) -> (bool, bool) {
     use self::TxType::*;
     match tx_type {
       DCT_DCT | ADST_DCT | DCT_ADST | ADST_ADST | IDTX | V_DCT | H_DCT

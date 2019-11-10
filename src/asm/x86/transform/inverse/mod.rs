@@ -1,3 +1,6 @@
+mod highbd;
+
+use self::highbd::*;
 use crate::cpu_features::CpuFeatureLevel;
 use crate::tiling::PlaneRegionMut;
 use crate::transform::*;
@@ -16,19 +19,48 @@ pub trait InvTxfm2D: native::InvTxfm2D {
   ) where
     T: Pixel,
   {
-    if std::mem::size_of::<T>() == 1 && cpu >= CpuFeatureLevel::AVX2 {
-      return unsafe {
-        Self::inv_txfm2d_add_avx2(input, output, tx_type, bd);
-      };
-    }
-    if std::mem::size_of::<T>() == 1 && cpu >= CpuFeatureLevel::SSSE3 {
-      return unsafe {
-        Self::inv_txfm2d_add_ssse3(input, output, tx_type, bd);
-      };
-    }
+    match std::mem::size_of::<T>() {
+      1 => {
+        if cpu >= CpuFeatureLevel::AVX2 {
+          return unsafe {
+            Self::inv_txfm2d_add_avx2(input, output, tx_type, bd);
+          };
+        }
+        if cpu >= CpuFeatureLevel::SSSE3 {
+          return unsafe {
+            Self::inv_txfm2d_add_ssse3(input, output, tx_type, bd);
+          };
+        }
+      }
+      2 => {
+        if cpu >= CpuFeatureLevel::AVX2 {
+          return unsafe {
+            highbd_inv_txfm_add_avx2(
+              input,
+              output,
+              tx_type,
+              TxSize::by_dims(Self::W, Self::H),
+              bd,
+            );
+          };
+        }
+        if cpu >= CpuFeatureLevel::SSE4_1 {
+          return unsafe {
+            highbd_inv_txfm_add_sse4_1(
+              input,
+              output,
+              tx_type,
+              TxSize::by_dims(Self::W, Self::H),
+              bd,
+            );
+          };
+        }
+      }
+      _ => unreachable!(),
+    };
     <Self as native::InvTxfm2D>::inv_txfm2d_add(
       input, output, tx_type, bd, cpu,
-    );
+    )
   }
 
   #[inline]

@@ -314,14 +314,14 @@ fn av1_round_shift_array_rs(arr: &mut [i32], size: usize, bit: i8) {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum TxType1D {
+pub(crate) enum TxType1D {
   DCT,
   ADST,
   FLIPADST,
   IDTX,
 }
 
-fn get_1d_tx_types(tx_type: TxType) -> (TxType1D, TxType1D) {
+pub(crate) fn get_1d_tx_types(tx_type: TxType) -> (TxType1D, TxType1D) {
   match tx_type {
     TxType::DCT_DCT => (TxType1D::DCT, TxType1D::DCT),
     TxType::ADST_DCT => (TxType1D::ADST, TxType1D::DCT),
