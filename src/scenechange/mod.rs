@@ -189,10 +189,12 @@ impl SceneChangeDetector {
     }
 
     if !self.fast_mode {
-      len += frame2.planes[1].cfg.width * frame2.planes[1].cfg.height;
+      let u_dec = frame1.planes[1].cfg.xdec + frame1.planes[1].cfg.ydec;
+      len += frame2.planes[1].cfg.width * frame2.planes[1].cfg.height << u_dec;
 
       let u_lines =
         frame1.planes[1].rows_iter().zip(frame2.planes[1].rows_iter());
+
 
       for (l1, l2) in u_lines {
         let delta_line = l1
@@ -202,13 +204,15 @@ impl SceneChangeDetector {
             (i16::cast_from(p1) - i16::cast_from(p2)).abs() as u64
           })
           .sum::<u64>();
-        delta += delta_line;
+        delta += delta_line << u_dec;
       }
 
-      len += frame2.planes[2].cfg.width * frame2.planes[2].cfg.height;
+      let v_dec = frame1.planes[2].cfg.xdec + frame1.planes[2].cfg.ydec;
+      len += frame2.planes[2].cfg.width * frame2.planes[2].cfg.height << v_dec;
 
       let v_lines =
         frame1.planes[2].rows_iter().zip(frame2.planes[2].rows_iter());
+
 
       for (l1, l2) in v_lines {
         let delta_line = l1
@@ -218,7 +222,7 @@ impl SceneChangeDetector {
             (i16::cast_from(p1) - i16::cast_from(p2)).abs() as u64
           })
           .sum::<u64>();
-        delta += delta_line;
+        delta += delta_line << v_dec;
       }
     }
 
