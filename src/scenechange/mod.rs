@@ -9,12 +9,15 @@
 
 use crate::api::EncoderConfig;
 use crate::api::InterConfig;
+use crate::cpu_features::CpuFeatureLevel;
+use crate::dist::get_satd;
+use crate::encoder::IMPORTANCE_BLOCK_SIZE;
 use crate::frame::*;
+use crate::hawktracer::*;
+use crate::partition::BlockSize;
+use crate::tiling::Area;
 use crate::util::CastFromPrimitive;
 use crate::util::Pixel;
-
-use crate::hawktracer::*;
-
 use std::cmp;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -22,30 +25,33 @@ use std::sync::Arc;
 /// Runs keyframe detection on frames from the lookahead queue.
 pub(crate) struct SceneChangeDetector {
   /// Minimum average difference between YUV deltas that will trigger a scene change.
-  threshold: u8,
-  /// Fast scene cut detection mode, ignoing chroma planes.
+  threshold: u64,
+  /// Fast scene cut detection mode, uses pixel SAD instead of block SATD.
   fast_mode: bool,
   /// Frames that cannot be marked as keyframes due to the algorithm excluding them.
   /// Storing the frame numbers allows us to avoid looking back more than one frame.
   excluded_frames: BTreeSet<u64>,
+  /// Bit depth of the video.
+  bit_depth: usize,
+  /// The ASM level to use for calculations.
+  cpu_feature_level: CpuFeatureLevel,
 }
 
 impl SceneChangeDetector {
-  pub fn new(bit_depth: u8, fast_mode: bool) -> Self {
-    // This implementation is based on a Python implementation at
-    // https://pyscenedetect.readthedocs.io/en/latest/reference/detection-methods/.
-    // The Python implementation uses HSV values and a threshold of 30. Comparing the
-    // YUV values was sufficient in most cases, and avoided a more costly YUV->RGB->HSV
-    // conversion, but the deltas needed to be scaled down. The deltas for keyframes
-    // in YUV were about 1/3 to 1/2 of what they were in HSV, but non-keyframes were
-    // very unlikely to have a delta greater than 3 in YUV, whereas they may reach into
-    // the double digits in HSV. Therefore, 12 was chosen as a reasonable default threshold.
-    // This may be adjusted later.
-    const BASE_THRESHOLD: u8 = 12;
+  pub fn new(
+    bit_depth: usize, fast_mode: bool, cpu_feature_level: CpuFeatureLevel,
+  ) -> Self {
     Self {
-      threshold: BASE_THRESHOLD * bit_depth / 8,
+      bit_depth,
+      // This threshold was chosen semi-arbitrarily based on experimentation.
+      threshold: if fast_mode {
+        12 * bit_depth / 8
+      } else {
+        440 << (bit_depth - 8)
+      } as u64,
       fast_mode,
       excluded_frames: BTreeSet::new(),
+      cpu_feature_level,
     }
   }
 
@@ -170,27 +176,20 @@ impl SceneChangeDetector {
   fn has_scenecut<T: Pixel>(
     &self, frame1: &Frame<T>, frame2: &Frame<T>,
   ) -> bool {
-    let mut len = frame2.planes[0].cfg.width * frame2.planes[0].cfg.height;
+    let len;
     let mut delta = 0;
 
-    delta += self.delta_in_planes(&frame1.planes[0], &frame2.planes[0]);
-
-    if !self.fast_mode {
-      let u_dec = frame1.planes[1].cfg.xdec + frame1.planes[1].cfg.ydec;
-      len +=
-        (frame2.planes[1].cfg.width * frame2.planes[1].cfg.height) << u_dec;
-
-      delta +=
-        self.delta_in_planes(&frame1.planes[1], &frame2.planes[1]) << u_dec;
-
-      let v_dec = frame1.planes[2].cfg.xdec + frame1.planes[2].cfg.ydec;
-      len +=
-        (frame2.planes[2].cfg.width * frame2.planes[2].cfg.height) << v_dec;
-      delta +=
-        self.delta_in_planes(&frame1.planes[2], &frame2.planes[2]) << v_dec;
+    if self.fast_mode {
+      delta += self.delta_in_planes(&frame1.planes[0], &frame2.planes[0]);
+      len = frame2.planes[0].cfg.width * frame2.planes[0].cfg.height;
+    } else {
+      delta += self.plane_satd(&frame1.planes[0], &frame2.planes[0]);
+      len = (frame2.planes[0].cfg.width * frame2.planes[0].cfg.height)
+        / IMPORTANCE_BLOCK_SIZE
+        / IMPORTANCE_BLOCK_SIZE;
     }
 
-    delta >= self.threshold as u64 * len as u64
+    delta >= self.threshold * len as u64
   }
 
   fn delta_in_planes<T: Pixel>(
@@ -209,6 +208,42 @@ impl SceneChangeDetector {
         .sum::<u64>();
       delta += delta_line;
     }
+    delta
+  }
+
+  fn plane_satd<T: Pixel>(&self, plane1: &Plane<T>, plane2: &Plane<T>) -> u64 {
+    let mut delta = 0;
+
+    let h_in_imp_b = plane1.cfg.height / IMPORTANCE_BLOCK_SIZE;
+    let w_in_imp_b = plane1.cfg.width / IMPORTANCE_BLOCK_SIZE;
+    let bsize = BlockSize::from_width_and_height(
+      IMPORTANCE_BLOCK_SIZE,
+      IMPORTANCE_BLOCK_SIZE,
+    );
+    for y in 0..h_in_imp_b {
+      for x in 0..w_in_imp_b {
+        let plane1 = plane1.region(Area::Rect {
+          x: (x * IMPORTANCE_BLOCK_SIZE) as isize,
+          y: (y * IMPORTANCE_BLOCK_SIZE) as isize,
+          width: IMPORTANCE_BLOCK_SIZE,
+          height: IMPORTANCE_BLOCK_SIZE,
+        });
+        let plane2 = plane2.region(Area::Rect {
+          x: (x * IMPORTANCE_BLOCK_SIZE) as isize,
+          y: (y * IMPORTANCE_BLOCK_SIZE) as isize,
+          width: IMPORTANCE_BLOCK_SIZE,
+          height: IMPORTANCE_BLOCK_SIZE,
+        });
+        delta += get_satd(
+          &plane1,
+          &plane2,
+          bsize,
+          self.bit_depth,
+          self.cpu_feature_level,
+        ) as u64;
+      }
+    }
+
     delta
   }
 }

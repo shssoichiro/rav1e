@@ -12,6 +12,7 @@ use crate::activity::ActivityMask;
 use crate::api::{EncoderConfig, EncoderStatus, FrameType, Packet};
 use crate::context::*;
 use crate::context::{FrameBlocks, SuperBlockOffset, TileSuperBlockOffset};
+use crate::cpu_features::CpuFeatureLevel;
 use crate::dist::get_satd;
 use crate::encoder::*;
 use crate::frame::*;
@@ -273,8 +274,9 @@ impl<T: Pixel> ContextInner<T> {
       gop_output_frameno_start: BTreeMap::new(),
       gop_input_frameno_start: BTreeMap::new(),
       keyframe_detector: SceneChangeDetector::new(
-        enc.bit_depth as u8,
+        enc.bit_depth,
         enc.speed_settings.fast_scene_detection,
+        CpuFeatureLevel::default(),
       ),
       config: *enc,
       seq: Sequence::new(enc),
