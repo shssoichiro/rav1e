@@ -36,6 +36,7 @@ static DEQUANTIZE_FNS: [Option<DequantizeFn>; CpuFeatureLevel::len()] = {
   out
 };
 
+#[inline(never)]
 pub fn dequantize<T: Coefficient>(
   qindex: u8, coeffs: &[T], eob: usize, rcoeffs: &mut [T], tx_size: TxSize,
   bit_depth: usize, dc_delta_q: i8, ac_delta_q: i8, cpu: CpuFeatureLevel,

@@ -515,6 +515,7 @@ fn supersample_chroma_bsize(
   }
 }
 
+#[inline(never)]
 pub fn get_intra_edges<T: Pixel>(
   dst: &PlaneRegion<'_, T>,
   partition_bo: TileBlockOffset, // partition bo, BlockOffset

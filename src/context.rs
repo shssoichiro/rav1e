@@ -1596,6 +1596,7 @@ impl<'a> BlockContext<'a> {
     }
   }
 
+  #[inline(never)]
   pub fn update_tx_size_context(
     &mut self, bo: TileBlockOffset, bsize: BlockSize, tx_size: TxSize,
     skip: bool,
@@ -2127,6 +2128,7 @@ impl<'a> ContextWriter<'a> {
     0
   }
 
+  #[inline(never)]
   pub fn write_tx_size_intra(
     &mut self, w: &mut dyn Writer, bo: TileBlockOffset, bsize: BlockSize,
     tx_size: TxSize,
@@ -2240,6 +2242,7 @@ impl<'a> ContextWriter<'a> {
     category * 3 + above + left
   }
 
+  #[inline(never)]
   pub fn write_tx_size_inter(
     &mut self, w: &mut dyn Writer, bo: TileBlockOffset, bsize: BlockSize,
     tx_size: TxSize, txfm_split: bool,
@@ -4012,6 +4015,7 @@ impl<'a> ContextWriter<'a> {
     mag + 14
   }
 
+  #[inline(never)]
   pub fn write_coeffs_lv_map<T: Coefficient>(
     &mut self, w: &mut dyn Writer, plane: usize, bo: TileBlockOffset,
     coeffs_in: &[T], eob: usize, pred_mode: PredictionMode, tx_size: TxSize,

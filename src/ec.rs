@@ -185,6 +185,7 @@ impl WriterEncoder {
 /// The Counter stores nothing we write to it, it merely counts the
 /// bit usage like in an Encoder for cost analysis.
 impl StorageBackend for WriterBase<WriterCounter> {
+  #[inline(never)]
   fn store(&mut self, fl: u16, fh: u16, nms: u16) {
     let (_l, r) = self.lr_compute(fl, fh, nms);
     let d = 16 - r.ilog();
@@ -226,6 +227,7 @@ impl StorageBackend for WriterBase<WriterCounter> {
 /// neds to be able to report bit costs for RDO decisions.  It stores a
 /// pair of mostly-computed range coding values per token recorded.
 impl StorageBackend for WriterBase<WriterRecorder> {
+  #[inline(never)]
   fn store(&mut self, fl: u16, fh: u16, nms: u16) {
     let (_l, r) = self.lr_compute(fl, fh, nms);
     let d = 16 - r.ilog();
@@ -269,6 +271,7 @@ impl StorageBackend for WriterBase<WriterRecorder> {
 /// tokens, only the resulting bitstream, and so it cannot be replayed
 /// (only checkpointed and rolled back).
 impl StorageBackend for WriterBase<WriterEncoder> {
+  #[inline(never)]
   fn store(&mut self, fl: u16, fh: u16, nms: u16) {
     let (l, r) = self.lr_compute(fl, fh, nms);
     let mut low = l + self.s.low;

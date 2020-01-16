@@ -361,6 +361,7 @@ const HTX_TAB: [TxType1D; TX_TYPES] = [
   TxType1D::FLIPADST,
 ];
 
+#[inline(never)]
 pub fn forward_transform<T: Coefficient>(
   input: &[i16], output: &mut [T], stride: usize, tx_size: TxSize,
   tx_type: TxType, bit_depth: usize, cpu: CpuFeatureLevel,

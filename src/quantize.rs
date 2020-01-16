@@ -246,7 +246,7 @@ impl QuantizationContext {
       self.ac_quant * (if is_intra { 88 } else { 44 }) / 256;
   }
 
-  #[inline]
+  #[inline(never)]
   pub fn quantize<T: Coefficient>(
     &self, coeffs: &[T], qcoeffs: &mut [T], tx_size: TxSize, tx_type: TxType,
   ) -> usize {
@@ -332,6 +332,7 @@ pub mod native {
   use super::*;
   use crate::cpu_features::CpuFeatureLevel;
 
+  #[inline(never)]
   pub fn dequantize<T: Coefficient>(
     qindex: u8, coeffs: &[T], _eob: usize, rcoeffs: &mut [T], tx_size: TxSize,
     bit_depth: usize, dc_delta_q: i8, ac_delta_q: i8, _cpu: CpuFeatureLevel,

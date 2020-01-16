@@ -120,6 +120,7 @@ impl Default for PartitionParameters {
   }
 }
 
+#[inline(never)]
 pub fn estimate_rate(qindex: u8, ts: TxSize, fast_distortion: u64) -> u64 {
   let bs_index = ts as usize;
   let q_bin_idx = (qindex as usize) / RDO_QUANT_DIV;
@@ -423,6 +424,7 @@ fn compute_tx_distortion<T: Pixel>(
   distortion
 }
 
+#[inline(never)]
 /// Compute a scaling factor to multiply the distortion of a block by,
 /// this factor is determined using temporal RDO.
 pub fn distortion_scale<T: Pixel>(

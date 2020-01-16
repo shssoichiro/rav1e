@@ -148,6 +148,7 @@ impl PredictionMode {
       || self == PredictionMode::NEAR_NEWMV
       || self == PredictionMode::NEW_NEARMV
   }
+  #[inline(never)]
   pub fn predict_intra<T: Pixel>(
     self, tile_rect: TileRect, dst: &mut PlaneRegionMut<'_, T>,
     tx_size: TxSize, bit_depth: usize, ac: &[i16], intra_param: IntraParam,
