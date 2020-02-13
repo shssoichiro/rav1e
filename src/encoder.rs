@@ -668,7 +668,7 @@ impl<T: Pixel> FrameInvariants<T> {
       use_reduced_tx_set,
       reference_mode: ReferenceMode::SINGLE,
       use_prev_frame_mvs: false,
-      partition_range: config.speed_settings.partition_range,
+      partition_range: config.speed_settings.intra_partition_range,
       globalmv_transformation_type: [GlobalMVMode::IDENTITY;
         INTER_REFS_PER_FRAME],
       num_tg: 1,
@@ -778,6 +778,7 @@ impl<T: Pixel> FrameInvariants<T> {
       inter_cfg.get_idx_in_group_output(output_frameno_in_gop);
     fi.tx_mode_select =
       fi.config.speed_settings.rdo_tx_decision || fi.enable_inter_txfm_split;
+    fi.partition_range = fi.config.speed_settings.inter_partition_range;
 
     fi.order_hint =
       inter_cfg.get_order_hint(output_frameno_in_gop, fi.idx_in_group_output);

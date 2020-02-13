@@ -222,8 +222,22 @@ impl fmt::Display for EncoderConfig {
       ("low_latency", self.low_latency.to_string()),
       ("tune", self.tune.to_string()),
       ("rdo_lookahead_frames", self.rdo_lookahead_frames.to_string()),
-      ("min_block_size", self.speed_settings.partition_range.min.to_string()),
-      ("max_block_size", self.speed_settings.partition_range.max.to_string()),
+      (
+        "min_block_size_intra",
+        self.speed_settings.intra_partition_range.min.to_string(),
+      ),
+      (
+        "max_block_size_intra",
+        self.speed_settings.intra_partition_range.max.to_string(),
+      ),
+      (
+        "min_block_size_inter",
+        self.speed_settings.inter_partition_range.min.to_string(),
+      ),
+      (
+        "max_block_size_inter",
+        self.speed_settings.inter_partition_range.max.to_string(),
+      ),
       (
         "multiref",
         (!self.low_latency || self.speed_settings.multiref).to_string(),
@@ -263,10 +277,14 @@ impl fmt::Display for EncoderConfig {
 /// Contains the speed settings.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct SpeedSettings {
-  /// Range of partition sizes that can be used. Larger ranges are slower.
+  /// Range of partition sizes that can be used for intra frames. Larger ranges are slower.
   ///
   /// Must be based on square block sizes, so e.g. 8×4 isn't allowed here.
-  pub partition_range: PartitionRange,
+  pub intra_partition_range: PartitionRange,
+  /// Range of partition sizes that can be used for inter frames. Larger ranges are slower.
+  ///
+  /// Must be based on square block sizes, so e.g. 8×4 isn't allowed here.
+  pub inter_partition_range: PartitionRange,
   /// Enables inter-frames to have multiple reference frames.
   ///
   /// Enabled is slower.
@@ -336,7 +354,11 @@ impl Default for SpeedSettings {
   /// It is set to the slowest settings possible.
   fn default() -> Self {
     SpeedSettings {
-      partition_range: PartitionRange::new(
+      intra_partition_range: PartitionRange::new(
+        BlockSize::BLOCK_4X4,
+        BlockSize::BLOCK_64X64,
+      ),
+      inter_partition_range: PartitionRange::new(
         BlockSize::BLOCK_4X4,
         BlockSize::BLOCK_64X64,
       ),
@@ -380,7 +402,8 @@ impl SpeedSettings {
   /// - 0 (slowest): min block size 4x4, complex pred modes, RDO TX decision, include near MVs, bottom-up encoding with non-square partitions everywhere
   pub fn from_preset(speed: usize) -> Self {
     SpeedSettings {
-      partition_range: Self::partition_range_preset(speed),
+      intra_partition_range: Self::intra_partition_range_preset(speed),
+      inter_partition_range: Self::inter_partition_range_preset(speed),
       multiref: Self::multiref_preset(speed),
       fast_deblock: Self::fast_deblock_preset(speed),
       reduced_tx_set: Self::reduced_tx_set_preset(speed),
@@ -405,7 +428,24 @@ impl SpeedSettings {
 
   /// This preset is set this way because 8x8 with reduced TX set is faster but with equivalent
   /// or better quality compared to 16x16 (to which reduced TX set does not apply).
-  fn partition_range_preset(speed: usize) -> PartitionRange {
+  ///
+  /// Intra partitions may use 4x4 blocks at higher speed settings
+  /// because 4x4 blocks are generally more useful in intra frames,
+  /// and have less of an impact on encoding time
+  /// compared to testing them in all frames.
+  fn intra_partition_range_preset(speed: usize) -> PartitionRange {
+    if speed <= 4 {
+      PartitionRange::new(BlockSize::BLOCK_4X4, BlockSize::BLOCK_64X64)
+    } else if speed <= 8 {
+      PartitionRange::new(BlockSize::BLOCK_8X8, BlockSize::BLOCK_64X64)
+    } else if speed <= 9 {
+      PartitionRange::new(BlockSize::BLOCK_32X32, BlockSize::BLOCK_64X64)
+    } else {
+      PartitionRange::new(BlockSize::BLOCK_32X32, BlockSize::BLOCK_32X32)
+    }
+  }
+
+  fn inter_partition_range_preset(speed: usize) -> PartitionRange {
     if speed <= 2 {
       PartitionRange::new(BlockSize::BLOCK_4X4, BlockSize::BLOCK_64X64)
     } else if speed <= 8 {
