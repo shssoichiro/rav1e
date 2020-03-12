@@ -497,12 +497,15 @@ pub fn distortion_scale_for(
 pub struct DistortionScale(u32);
 
 #[repr(transparent)]
+#[derive(Copy, Clone, Debug)]
 pub struct RawDistortion(u64);
 
 #[repr(transparent)]
+#[derive(Copy, Clone, Debug)]
 pub struct Distortion(u64);
 
 #[repr(transparent)]
+#[derive(Copy, Clone, Debug)]
 pub struct ScaledDistortion(u64);
 
 impl DistortionScale {

@@ -165,6 +165,7 @@ mod activity;
 pub(crate) mod asm;
 mod dist;
 mod ec;
+mod palette;
 mod partition;
 mod predict;
 mod quantize;

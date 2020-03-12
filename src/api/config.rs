@@ -21,6 +21,7 @@ use crate::serialize::{Deserialize, Serialize};
 use crate::tiling::TilingInfo;
 use crate::util::Pixel;
 
+use crate::palette::PaletteSearchLevel;
 use std::fmt;
 
 // We add 1 to rdo_lookahead_frames in a bunch of places.
@@ -339,6 +340,9 @@ pub struct SpeedSettings {
   ///
   /// Must be based on square block sizes, so e.g. 8×4 isn't allowed here.
   pub partition_range: PartitionRange,
+
+  /// Depth of palette search to perform
+  pub palette_search_level: PaletteSearchLevel,
 }
 
 impl Default for SpeedSettings {
@@ -412,6 +416,7 @@ impl SpeedSettings {
       enable_segmentation: Self::enable_segmentation_preset(speed),
       enable_inter_tx_split: Self::enable_inter_tx_split_preset(speed),
       fine_directional_intra: Self::fine_directional_intra_preset(speed),
+      palette_search_level: Self::palette_search_preset(speed),
     }
   }
 
@@ -531,6 +536,13 @@ impl SpeedSettings {
 
   fn fine_directional_intra_preset(speed: usize) -> bool {
     speed <= 1 || speed >= 6
+  }
+
+  fn palette_search_preset(speed: usize) -> PaletteSearchLevel {
+    if speed >= 4 {
+      return PaletteSearchLevel::FastSearch;
+    }
+    return PaletteSearchLevel::CoarseSearch;
   }
 }
 

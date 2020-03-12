@@ -26,6 +26,7 @@ use crate::cpu_features::CpuFeatureLevel;
 use crate::encoder::FrameInvariants;
 use crate::frame::*;
 use crate::mc::*;
+use crate::palette::PaletteInfo;
 use crate::partition::*;
 use crate::tiling::*;
 use crate::transform::*;
@@ -152,7 +153,8 @@ impl PredictionMode {
     self, tile_rect: TileRect, dst: &mut PlaneRegionMut<'_, T>,
     tx_size: TxSize, bit_depth: usize, ac: &[i16], intra_param: IntraParam,
     ief_params: Option<IntraEdgeFilterParameters>,
-    edge_buf: &Aligned<[T; 4 * MAX_TX_SIZE + 1]>, cpu: CpuFeatureLevel,
+    edge_buf: &Aligned<[T; 4 * MAX_TX_SIZE + 1]>,
+    palette: Option<&PaletteInfo>, cpu: CpuFeatureLevel,
   ) {
     assert!(self.is_intra());
     let &Rect { x: frame_x, y: frame_y, .. } = dst.rect();
