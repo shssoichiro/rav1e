@@ -62,7 +62,7 @@ pub struct TileStateMut<'a, T: Pixel> {
   pub qc: QuantizationContext,
   pub segmentation: &'a SegmentationState,
   pub restoration: TileRestorationStateMut<'a>,
-  pub me_stats: Vec<TileMEStatsMut<'a>>,
+  pub me_stats: Vec<TileMEStats<'a>>,
   pub coded_block_info: MiTileState,
   pub integral_buffer: IntegralImageBuffer,
   pub inter_compound_buffers: InterCompoundBuffers,
@@ -171,10 +171,11 @@ impl<'a, T: Pixel> TileStateMut<'a, T> {
         sb_width,
         sb_height,
       ),
-      me_stats: Arc::make_mut(&mut fs.frame_me_stats)
-        .iter_mut()
+      me_stats: fs
+        .frame_me_stats
+        .iter()
         .map(|fmvs| {
-          TileMEStatsMut::new(
+          TileMEStats::new(
             fmvs,
             sbo.0.x << (sb_size_log2 - MI_SIZE_LOG2),
             sbo.0.y << (sb_size_log2 - MI_SIZE_LOG2),

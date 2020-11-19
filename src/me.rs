@@ -27,24 +27,88 @@ use arrayvec::*;
 use crate::api::InterConfig;
 use crate::util::ILog;
 use std::ops::{Index, IndexMut};
+use std::sync::atomic::{AtomicI16, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use crate::hawktracer::*;
 
-#[derive(Debug, Copy, Clone)]
-pub struct MEStats {
-  pub mv: MotionVector,
-  /// sad value, on the scale of a 128x128 block
-  pub normalized_sad: u32,
+#[derive(Debug, Default)]
+pub struct AtomicMotionVector {
+  pub row: AtomicI16,
+  pub col: AtomicI16,
 }
 
-impl Default for MEStats {
-  fn default() -> Self {
-    Self { mv: MotionVector::default(), normalized_sad: 0 }
+impl AtomicMotionVector {
+  pub fn update_from_atomic(&self, other: &AtomicMotionVector) {
+    self.col.store(other.col.load(Ordering::Relaxed), Ordering::Relaxed);
+    self.row.store(other.row.load(Ordering::Relaxed), Ordering::Relaxed);
+  }
+
+  pub fn update_from(&self, other: &MotionVector) {
+    self.col.store(other.col, Ordering::Relaxed);
+    self.row.store(other.row, Ordering::Relaxed);
+  }
+
+  #[inline]
+  pub fn quantize_to_fullpel(&self) -> MotionVector {
+    MotionVector::from(self).quantize_to_fullpel()
+  }
+
+  #[inline]
+  pub fn is_zero(&self) -> bool {
+    MotionVector::from(self).is_zero()
+  }
+
+  #[inline]
+  pub fn is_valid(&self) -> bool {
+    MotionVector::from(self).is_valid()
   }
 }
 
-#[derive(Debug, Clone)]
+impl From<AtomicMotionVector> for MotionVector {
+  fn from(mv: AtomicMotionVector) -> Self {
+    MotionVector {
+      row: mv.row.load(Ordering::Relaxed),
+      col: mv.col.load(Ordering::Relaxed),
+    }
+  }
+}
+
+impl From<&AtomicMotionVector> for MotionVector {
+  fn from(mv: &AtomicMotionVector) -> Self {
+    MotionVector {
+      row: mv.row.load(Ordering::Relaxed),
+      col: mv.col.load(Ordering::Relaxed),
+    }
+  }
+}
+
+impl From<MotionVector> for AtomicMotionVector {
+  fn from(mv: MotionVector) -> Self {
+    AtomicMotionVector {
+      row: AtomicI16::from(mv.row),
+      col: AtomicI16::from(mv.col),
+    }
+  }
+}
+
+#[derive(Debug, Default)]
+pub struct MEStats {
+  pub mv: AtomicMotionVector,
+  /// sad value, on the scale of a 128x128 block
+  pub normalized_sad: AtomicU32,
+}
+
+impl MEStats {
+  pub fn update_from(&self, other: &MEStats) {
+    self.mv.update_from_atomic(&other.mv);
+    self
+      .normalized_sad
+      .store(other.normalized_sad.load(Ordering::Relaxed), Ordering::Relaxed);
+  }
+}
+
+#[derive(Debug)]
 pub struct FrameMEStats {
   stats: Box<[MEStats]>,
   pub cols: usize,
@@ -55,7 +119,13 @@ impl FrameMEStats {
   pub fn new(cols: usize, rows: usize) -> Self {
     Self {
       // dynamic allocation: once per frame
-      stats: vec![MEStats::default(); cols * rows].into_boxed_slice(),
+      stats: {
+        let mut vec = Vec::with_capacity(cols * rows);
+        for _ in 0..(cols * rows) {
+          vec.push(MEStats::default());
+        }
+        vec.into_boxed_slice()
+      },
       cols,
       rows,
     }
@@ -209,7 +279,10 @@ fn estimate_sb_motion<T: Pixel>(
             bsize,
             sub_bo,
             ref_frame,
-            MEStats { mv: results.mv, normalized_sad: sad },
+            MEStats {
+              mv: results.mv.into(),
+              normalized_sad: AtomicU32::from(sad),
+            },
           );
         }
       }
@@ -232,8 +305,8 @@ fn save_me_stats<T: Pixel>(
   let tile_bo_x_end = (tile_bo.0.x + bsize.width_mi()).min(ts.mi_width);
   let tile_bo_y_end = (tile_bo.0.y + bsize.height_mi()).min(ts.mi_height);
   for mi_y in tile_bo.0.y..tile_bo_y_end {
-    for a in tile_me_stats[mi_y][tile_bo.0.x..tile_bo_x_end].iter_mut() {
-      *a = stats;
+    for a in tile_me_stats[mi_y][tile_bo.0.x..tile_bo_x_end].iter() {
+      a.update_from(&stats);
     }
   }
 }
@@ -304,8 +377,8 @@ fn get_subset_predictors<T: Pixel>(
   let clipped_half_w = (w >> 1).min(tile_me_stats.cols() - 1 - tile_bo.0.x);
   let clipped_half_h = (h >> 1).min(tile_me_stats.rows() - 1 - tile_bo.0.y);
 
-  let mut process_cand = |stats: MEStats| -> MotionVector {
-    min_sad = min_sad.min(stats.normalized_sad);
+  let mut process_cand = |stats: &MEStats| -> MotionVector {
+    min_sad = min_sad.min(stats.normalized_sad.load(Ordering::Relaxed));
     let mv = stats.mv.quantize_to_fullpel();
     MotionVector {
       col: clamp(mv.col as isize, mvx_min, mvx_max) as i16,
@@ -321,13 +394,13 @@ fn get_subset_predictors<T: Pixel>(
   // left
   if tile_bo.0.x > 0 {
     subset_b.push(process_cand(
-      tile_me_stats[tile_bo.0.y + clipped_half_h][tile_bo.0.x - 1],
+      &tile_me_stats[tile_bo.0.y + clipped_half_h][tile_bo.0.x - 1],
     ));
   }
   // top
   if tile_bo.0.y > 0 {
     subset_b.push(process_cand(
-      tile_me_stats[tile_bo.0.y - 1][tile_bo.0.x + clipped_half_w],
+      &tile_me_stats[tile_bo.0.y - 1][tile_bo.0.x + clipped_half_w],
     ));
   }
 
@@ -339,7 +412,7 @@ fn get_subset_predictors<T: Pixel>(
   if let MVSamplingMode::CORNER { right: true, bottom: _ } = corner {
     if tile_bo.0.x + w < tile_me_stats.cols() {
       subset_b.push(process_cand(
-        tile_me_stats[tile_bo.0.y + clipped_half_h][tile_bo.0.x + w],
+        &tile_me_stats[tile_bo.0.y + clipped_half_h][tile_bo.0.x + w],
       ));
     }
   }
@@ -347,7 +420,7 @@ fn get_subset_predictors<T: Pixel>(
   if let MVSamplingMode::CORNER { right: _, bottom: true } = corner {
     if tile_bo.0.y + h < tile_me_stats.rows() {
       subset_b.push(process_cand(
-        tile_me_stats[tile_bo.0.y + h][tile_bo.0.x + clipped_half_w],
+        &tile_me_stats[tile_bo.0.y + h][tile_bo.0.x + clipped_half_w],
       ));
     }
   }
@@ -355,7 +428,7 @@ fn get_subset_predictors<T: Pixel>(
   let median = if corner != MVSamplingMode::INIT {
     // Sample the center of the current block.
     Some(process_cand(
-      tile_me_stats[tile_bo.0.y + clipped_half_h]
+      &tile_me_stats[tile_bo.0.y + clipped_half_h]
         [tile_bo.0.x + clipped_half_w],
     ))
   } else if subset_b.len() != 3 {
@@ -391,30 +464,31 @@ fn get_subset_predictors<T: Pixel>(
     // left
     if frame_bo.0.x > 0 {
       subset_c.push(process_cand(
-        prev_frame[frame_bo.0.y + clipped_half_h][frame_bo.0.x - 1],
+        &prev_frame[frame_bo.0.y + clipped_half_h][frame_bo.0.x - 1],
       ));
     }
     // top
     if frame_bo.0.y > 0 {
       subset_c.push(process_cand(
-        prev_frame[frame_bo.0.y - 1][frame_bo.0.x + clipped_half_w],
+        &prev_frame[frame_bo.0.y - 1][frame_bo.0.x + clipped_half_w],
       ));
     }
     // right
     if frame_bo.0.x + w < prev_frame.cols {
       subset_c.push(process_cand(
-        prev_frame[frame_bo.0.y + clipped_half_h][frame_bo.0.x + w],
+        &prev_frame[frame_bo.0.y + clipped_half_h][frame_bo.0.x + w],
       ));
     }
     // bottom
     if frame_bo.0.y + h < prev_frame.rows {
       subset_c.push(process_cand(
-        prev_frame[frame_bo.0.y + h][frame_bo.0.x + clipped_half_w],
+        &prev_frame[frame_bo.0.y + h][frame_bo.0.x + clipped_half_w],
       ));
     }
 
     subset_c.push(process_cand(
-      prev_frame[frame_bo.0.y + clipped_half_h][frame_bo.0.x + clipped_half_w],
+      &prev_frame[frame_bo.0.y + clipped_half_h]
+        [frame_bo.0.x + clipped_half_w],
     ));
   }
 
@@ -616,7 +690,7 @@ fn full_pixel_me<T: Pixel>(
 ) -> FullpelSearchResult {
   let ssdec = conf.ssdec;
 
-  let tile_me_stats = &ts.me_stats[ref_frame.to_index()].as_const();
+  let tile_me_stats = &ts.me_stats[ref_frame.to_index()];
   let frame_ref =
     fi.rec_buffer.frames[fi.ref_frames[0] as usize].as_ref().map(Arc::as_ref);
   let subsets = get_subset_predictors(

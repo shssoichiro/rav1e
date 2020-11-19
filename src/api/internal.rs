@@ -33,6 +33,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 /// The set of options that controls frame re-ordering and reference picture
@@ -912,14 +913,14 @@ impl<T: Pixel> ContextInner<T> {
               .zip(fi.block_importances.chunks_exact(fi.w_in_imp_b))
               .for_each(|((y, lookahead_intra_costs), block_importances)| {
                 (0..fi.w_in_imp_b).for_each(|x| {
-                  let mv = me_stats[y * 2][x * 2].mv;
+                  let mv = &me_stats[y * 2][x * 2].mv;
 
                   // Coordinates of the top-left corner of the reference block, in MV
                   // units.
-                  let reference_x =
-                    x as i64 * IMP_BLOCK_SIZE_IN_MV_UNITS + mv.col as i64;
-                  let reference_y =
-                    y as i64 * IMP_BLOCK_SIZE_IN_MV_UNITS + mv.row as i64;
+                  let reference_x = x as i64 * IMP_BLOCK_SIZE_IN_MV_UNITS
+                    + mv.col.load(Ordering::Relaxed) as i64;
+                  let reference_y = y as i64 * IMP_BLOCK_SIZE_IN_MV_UNITS
+                    + mv.row.load(Ordering::Relaxed) as i64;
 
                   let region_org = plane_org.region(Area::Rect {
                     x: (x * IMPORTANCE_BLOCK_SIZE) as isize,

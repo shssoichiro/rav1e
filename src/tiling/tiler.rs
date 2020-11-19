@@ -253,6 +253,7 @@ pub mod test {
   use crate::lrf::*;
   use crate::mc::MotionVector;
   use crate::predict::PredictionMode;
+  use std::sync::atomic::Ordering;
 
   #[test]
   fn test_tiling_info_from_tile_count() {
@@ -737,26 +738,28 @@ pub mod test {
       {
         // block (8, 5) of the top-left tile (of the first ref frame)
         let me_stats = &mut tile_states[0].me_stats[0];
-        me_stats[5][8].mv = MotionVector { col: 42, row: 38 };
+        me_stats[5][8].mv.update_from(&MotionVector { col: 42, row: 38 });
         println!("{:?}", me_stats[5][8].mv);
       }
 
       {
         // block (4, 2) of the middle-right tile (of ref frame 2)
         let me_stats = &mut tile_states[5].me_stats[2];
-        me_stats[2][3].mv = MotionVector { col: 2, row: 14 };
+        me_stats[2][3].mv.update_from(&MotionVector { col: 2, row: 14 });
       }
     }
 
     // check that writes on tiled views affected the underlying motion vectors
 
     let me_stats = &fs.frame_me_stats[0];
-    assert_eq!(MotionVector { col: 42, row: 38 }, me_stats[5][8].mv);
+    assert_eq!(42, me_stats[5][8].mv.col.load(Ordering::Relaxed));
+    assert_eq!(38, me_stats[5][8].mv.row.load(Ordering::Relaxed));
 
     let me_stats = &fs.frame_me_stats[2];
     let mix = (128 >> MI_SIZE_LOG2) + 3;
     let miy = (64 >> MI_SIZE_LOG2) + 2;
-    assert_eq!(MotionVector { col: 2, row: 14 }, me_stats[miy][mix].mv);
+    assert_eq!(2, me_stats[miy][mix].mv.col.load(Ordering::Relaxed));
+    assert_eq!(14, me_stats[miy][mix].mv.row.load(Ordering::Relaxed));
   }
 
   #[test]
