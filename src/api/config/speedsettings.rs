@@ -13,6 +13,7 @@ use crate::partition::BlockSize;
 use crate::serialize::{Deserialize, Serialize};
 
 use std::fmt;
+use std::fmt::{Display, Formatter};
 
 // NOTE: Add Structures at the end.
 /// Contains the speed settings.
@@ -84,6 +85,9 @@ pub struct SpeedSettings {
   /// Use fine directional intra prediction
   pub fine_directional_intra: bool,
 
+  /// Which partition decision method to use
+  pub partition_search_mode: PartitionSearch,
+
   // NOTE: put enums and basic type fields above
   /// Range of partition sizes that can be used. Larger ranges are slower.
   ///
@@ -100,6 +104,7 @@ impl Default for SpeedSettings {
         BlockSize::BLOCK_4X4,
         BlockSize::BLOCK_64X64,
       ),
+      partition_search_mode: PartitionSearch::Search,
       multiref: true,
       fast_deblock: false,
       reduced_tx_set: false,
@@ -127,10 +132,10 @@ impl SpeedSettings {
   /// Set the speed setting according to a numeric speed preset.
   ///
   /// The speed settings vary depending on speed value from 0 to 10.
-  /// - 10 (fastest): fixed block size 32x32, reduced TX set, fast deblock, fast scenechange detection.
-  /// - 9: min block size 32x32, reduced TX set, fast deblock.
-  /// - 8: min block size 8x8, reduced TX set, fast deblock.
-  /// - 7: min block size 8x8, reduced TX set.
+  /// - 10 (fastest): min block size 32x32, reduced TX set, fast partition selection, fast deblock, fast scenechange detection.
+  /// - 9: min block size 16x16, reduced TX set, fast partition selection, fast deblock.
+  /// - 8: min block size 8x8, reduced TX set, fast partition selection, fast deblock.
+  /// - 7: min block size 8x8, reduced TX set, fast partition selection.
   /// - 6 (default): min block size 8x8, reduced TX set, complex pred modes for keyframes.
   /// - 5: min block size 8x8, complex pred modes for keyframes, RDO TX decision.
   /// - 4: min block size 8x8, complex pred modes for keyframes, RDO TX decision, include near MVs,
@@ -147,6 +152,7 @@ impl SpeedSettings {
   pub fn from_preset(speed: usize) -> Self {
     SpeedSettings {
       partition_range: Self::partition_range_preset(speed),
+      partition_search_mode: Self::partition_search_preset(speed),
       multiref: Self::multiref_preset(speed),
       fast_deblock: Self::fast_deblock_preset(speed),
       reduced_tx_set: Self::reduced_tx_set_preset(speed),
@@ -177,9 +183,17 @@ impl SpeedSettings {
     } else if speed <= 8 {
       PartitionRange::new(BlockSize::BLOCK_8X8, BlockSize::BLOCK_64X64)
     } else if speed <= 9 {
-      PartitionRange::new(BlockSize::BLOCK_32X32, BlockSize::BLOCK_64X64)
+      PartitionRange::new(BlockSize::BLOCK_16X16, BlockSize::BLOCK_64X64)
     } else {
-      PartitionRange::new(BlockSize::BLOCK_32X32, BlockSize::BLOCK_32X32)
+      PartitionRange::new(BlockSize::BLOCK_32X32, BlockSize::BLOCK_64X64)
+    }
+  }
+
+  fn partition_search_preset(speed: usize) -> PartitionSearch {
+    if speed <= 6 {
+      PartitionSearch::Search
+    } else {
+      PartitionSearch::Variance
     }
   }
 
@@ -310,6 +324,28 @@ impl PartitionRange {
     assert!(max.is_sqr());
 
     Self { min, max }
+  }
+}
+
+/// Which partition decision method to use
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub enum PartitionSearch {
+  /// Standard partition search method
+  Search,
+  /// Faster estimation using block variances
+  Variance,
+}
+
+impl Display for PartitionSearch {
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    write!(
+      f,
+      "{}",
+      match self {
+        PartitionSearch::Search => "Search",
+        PartitionSearch::Variance => "Variance",
+      }
+    )
   }
 }
 

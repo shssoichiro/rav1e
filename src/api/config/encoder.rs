@@ -234,6 +234,10 @@ impl fmt::Display for EncoderConfig {
       ("min_block_size", self.speed_settings.partition_range.min.to_string()),
       ("max_block_size", self.speed_settings.partition_range.max.to_string()),
       (
+        "partition_search_mode",
+        self.speed_settings.partition_search_mode.to_string(),
+      ),
+      (
         "multiref",
         (!self.low_latency || self.speed_settings.multiref).to_string(),
       ),

@@ -613,6 +613,8 @@ pub struct FrameInvariants<T: Pixel> {
   pub cpu_feature_level: crate::cpu_features::CpuFeatureLevel,
   pub activity_mask: ActivityMask,
   pub enable_segmentation: bool,
+  /// Variance thresholds for 64x64, 32x32, 16x16, and 8x8 splitting
+  pub variance_partition_thresholds: Option<[u32; 4]>,
 }
 
 pub(crate) const fn pos_to_lvl(pos: u64, pyramid_depth: u64) -> u64 {
@@ -759,6 +761,21 @@ impl<T: Pixel> FrameInvariants<T> {
       enable_segmentation: config.speed_settings.segmentation
         != SegmentationLevel::Disabled,
       enable_inter_txfm_split: config.speed_settings.enable_inter_tx_split,
+      variance_partition_thresholds: if config
+        .speed_settings
+        .partition_search_mode
+        == PartitionSearch::Variance
+      {
+        Some(calculate_variance_parition_thresholds(
+          true,
+          width,
+          height,
+          config.quantizer as i64,
+          config.bit_depth,
+        ))
+      } else {
+        None
+      },
       sequence,
       config,
     }
@@ -3553,6 +3570,74 @@ pub fn update_rec_buffer<T: Pixel>(
       fi.rec_buffer.deblock[i] = fs.deblock;
     }
   }
+}
+
+fn calculate_variance_parition_thresholds(
+  intra_only: bool, width: usize, height: usize, base_q: i64, bit_depth: usize,
+) -> [u32; 4] {
+  let threshold_multiplier = if intra_only { 120 } else { 1 };
+  let mut threshold_base =
+    threshold_multiplier * select_dc_qi(base_q, bit_depth) as u32;
+
+  let mut thresholds = [0; 4];
+  if intra_only {
+    thresholds[0] = threshold_base;
+    if width * height < 1280 * 720 {
+      thresholds[1] = threshold_base / 3;
+      thresholds[2] = threshold_base >> 1;
+    } else {
+      thresholds[1] = threshold_base >> 2;
+      thresholds[2] = threshold_base >> 2;
+    }
+    thresholds[3] = threshold_base << 2;
+    return thresholds;
+  }
+
+  threshold_base = (3 * threshold_base) >> 1;
+  thresholds[0] = threshold_base;
+  thresholds[2] = threshold_base << 7;
+  if width >= 1280 && height >= 720 {
+    thresholds[2] <<= 1;
+  }
+
+  const QINDEX_HIGH_THRESHOLD: i64 = 220;
+  const QINDEX_LOW_THRESHOLD: i64 = 200;
+  if width * height <= 352 * 288 {
+    if base_q >= QINDEX_HIGH_THRESHOLD {
+      threshold_base = (5 * threshold_base) >> 1;
+      thresholds[0] = threshold_base >> 3;
+      thresholds[1] = threshold_base << 2;
+      thresholds[2] = threshold_base << 5;
+    } else if base_q < QINDEX_LOW_THRESHOLD {
+      thresholds[0] = threshold_base >> 3;
+      thresholds[1] = threshold_base >> 1;
+      thresholds[2] = threshold_base << 3;
+    } else {
+      let q_diff_low = (base_q - QINDEX_LOW_THRESHOLD) as u32;
+      let q_diff_high = (QINDEX_HIGH_THRESHOLD - base_q) as u32;
+      let threshold_diff =
+        (QINDEX_HIGH_THRESHOLD - QINDEX_LOW_THRESHOLD) as u32;
+      let threshold_base_high = (5 * threshold_base) >> 1;
+      threshold_base = (q_diff_low * threshold_base_high
+        + q_diff_high * threshold_base)
+        / threshold_diff;
+      thresholds[0] = threshold_base >> 3;
+      thresholds[1] = ((q_diff_low * threshold_base)
+        + q_diff_high * (threshold_base >> 1))
+        / threshold_diff;
+      thresholds[2] = ((q_diff_low * (threshold_base << 5))
+        + q_diff_high * (threshold_base << 3))
+        / threshold_diff;
+    }
+  } else if width < 1280 && height < 720 {
+    thresholds[1] = (5 * threshold_base) >> 2;
+  } else if width < 1920 && height < 1080 {
+    thresholds[1] = threshold_base << 1;
+  } else {
+    thresholds[1] = (5 * threshold_base) >> 1;
+  }
+
+  thresholds
 }
 
 #[cfg(test)]
