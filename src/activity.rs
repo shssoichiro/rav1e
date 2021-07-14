@@ -16,7 +16,7 @@ use rust_hawktracer::*;
 
 #[derive(Debug, Default, Clone)]
 pub struct ActivityMask {
-  variances: Box<[u32]>,
+  pub variances: Box<[u32]>,
   // Width and height of the original frame that is masked
   width: usize,
   height: usize,

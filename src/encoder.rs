@@ -2705,27 +2705,52 @@ fn encode_partition_topdown<T: Pixel, W: Writer>(
     partition = PartitionType::PARTITION_SPLIT;
   } else if can_split {
     debug_assert!(bsize.is_sqr());
-    // Blocks of sizes within the supported range are subjected to a partitioning decision
-    let mut partition_types = ArrayVec::<PartitionType, 3>::new();
 
-    partition_types.push(PartitionType::PARTITION_SPLIT);
-    if !must_split {
-      partition_types.push(PartitionType::PARTITION_NONE);
+    if let Some(variance_split_thresholds) = fi.variance_partition_thresholds {
+      let threshold = match bsize {
+        BlockSize::BLOCK_64X64 => variance_split_thresholds[0],
+        BlockSize::BLOCK_32X32 => variance_split_thresholds[1],
+        BlockSize::BLOCK_16X16 => variance_split_thresholds[2],
+        BlockSize::BLOCK_8X8 => variance_split_thresholds[3],
+        _ => unreachable!(),
+      };
+      let bo = ts.sbo.block_offset(tile_bo.0.x, tile_bo.0.y);
+      let x_in_b = bo.0.x / 8;
+      let y_in_b = bo.0.y / 8;
+      let mut variance_sum = 0;
+      for oy in y_in_b..(y_in_b + bsize.height() / 8) {
+        for ox in x_in_b..(x_in_b + bsize.width() / 8) {
+          variance_sum += fi.activity_mask.variances[oy * fi.w_in_imp_b + ox];
+        }
+      }
+      if variance_sum >= threshold {
+        partition = PartitionType::PARTITION_SPLIT;
+      } else {
+        partition = PartitionType::PARTITION_NONE;
+      }
+    } else {
+      // Blocks of sizes within the supported range are subjected to a partitioning decision
+      let mut partition_types = ArrayVec::<PartitionType, 3>::new();
+
+      partition_types.push(PartitionType::PARTITION_SPLIT);
+      if !must_split {
+        partition_types.push(PartitionType::PARTITION_NONE);
+      }
+      rdo_output = rdo_partition_decision(
+        fi,
+        ts,
+        cw,
+        w_pre_cdef,
+        w_post_cdef,
+        bsize,
+        tile_bo,
+        &rdo_output,
+        &partition_types,
+        rdo_type,
+        inter_cfg,
+      );
+      partition = rdo_output.part_type;
     }
-    rdo_output = rdo_partition_decision(
-      fi,
-      ts,
-      cw,
-      w_pre_cdef,
-      w_post_cdef,
-      bsize,
-      tile_bo,
-      &rdo_output,
-      &partition_types,
-      rdo_type,
-      inter_cfg,
-    );
-    partition = rdo_output.part_type;
   } else {
     // Blocks of sizes below the supported range are encoded directly
     partition = PartitionType::PARTITION_NONE;
@@ -2927,7 +2952,11 @@ fn encode_partition_topdown<T: Pixel, W: Writer>(
           );
         }
       } else {
-        debug_assert!(must_split);
+        debug_assert!(
+          must_split
+            || fi.config.speed_settings.partition_search_mode
+              == PartitionSearch::Variance
+        );
         let hbsw = subsize.width_mi(); // Half the block size width in blocks
         let hbsh = subsize.height_mi(); // Half the block size height in blocks
         let four_partitions = [
