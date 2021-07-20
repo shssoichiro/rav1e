@@ -2714,16 +2714,27 @@ fn encode_partition_topdown<T: Pixel, W: Writer>(
         BlockSize::BLOCK_8X8 => variance_split_thresholds[3],
         _ => unreachable!(),
       };
-      let bo = ts.sbo.block_offset(tile_bo.0.x, tile_bo.0.y);
-      let x_in_b = bo.0.x / 8;
-      let y_in_b = bo.0.y / 8;
-      let mut variance_sum = 0;
-      for oy in y_in_b..(y_in_b + bsize.height() / 8) {
-        for ox in x_in_b..(x_in_b + bsize.width() / 8) {
-          variance_sum += fi.activity_mask.variances[oy * fi.w_in_imp_b + ox];
+      let variance = match bsize {
+        BlockSize::BLOCK_64X64 => variance_64x64,
+        BlockSize::BLOCK_32X32 => variance_32x32,
+        BlockSize::BLOCK_16X16 => variance_16x16,
+        BlockSize::BLOCK_8X8 => variance_8x8,
+        _ => unreachable!(),
+      }(&PlaneRegion::new(
+        &ts.input.planes[0],
+        Area::BlockRect {
+          bo: ts.sbo.block_offset(tile_bo.0.x, tile_bo.0.y).0,
+          width: bsize.width(),
+          height: bsize.height(),
         }
-      }
-      if variance_sum >= threshold {
+        .to_rect(
+          ts.input_tile.planes[0].plane_cfg.xdec,
+          ts.input_tile.planes[0].plane_cfg.ydec,
+          ts.input_tile.planes[0].plane_cfg.width,
+          ts.input_tile.planes[0].plane_cfg.height,
+        ),
+      ));
+      if variance >= threshold {
         partition = PartitionType::PARTITION_SPLIT;
       } else {
         partition = PartitionType::PARTITION_NONE;
@@ -3619,52 +3630,55 @@ fn calculate_variance_parition_thresholds(
       thresholds[2] = threshold_base >> 2;
     }
     thresholds[3] = threshold_base << 2;
-    return thresholds;
-  }
-
-  threshold_base = (3 * threshold_base) >> 1;
-  thresholds[0] = threshold_base;
-  thresholds[2] = threshold_base << 7;
-  if width >= 1280 && height >= 720 {
-    thresholds[2] <<= 1;
-  }
-
-  const QINDEX_HIGH_THRESHOLD: i64 = 220;
-  const QINDEX_LOW_THRESHOLD: i64 = 200;
-  if width * height <= 352 * 288 {
-    if base_q >= QINDEX_HIGH_THRESHOLD {
-      threshold_base = (5 * threshold_base) >> 1;
-      thresholds[0] = threshold_base >> 3;
-      thresholds[1] = threshold_base << 2;
-      thresholds[2] = threshold_base << 5;
-    } else if base_q < QINDEX_LOW_THRESHOLD {
-      thresholds[0] = threshold_base >> 3;
-      thresholds[1] = threshold_base >> 1;
-      thresholds[2] = threshold_base << 3;
-    } else {
-      let q_diff_low = (base_q - QINDEX_LOW_THRESHOLD) as u32;
-      let q_diff_high = (QINDEX_HIGH_THRESHOLD - base_q) as u32;
-      let threshold_diff =
-        (QINDEX_HIGH_THRESHOLD - QINDEX_LOW_THRESHOLD) as u32;
-      let threshold_base_high = (5 * threshold_base) >> 1;
-      threshold_base = (q_diff_low * threshold_base_high
-        + q_diff_high * threshold_base)
-        / threshold_diff;
-      thresholds[0] = threshold_base >> 3;
-      thresholds[1] = ((q_diff_low * threshold_base)
-        + q_diff_high * (threshold_base >> 1))
-        / threshold_diff;
-      thresholds[2] = ((q_diff_low * (threshold_base << 5))
-        + q_diff_high * (threshold_base << 3))
-        / threshold_diff;
-    }
-  } else if width < 1280 && height < 720 {
-    thresholds[1] = (5 * threshold_base) >> 2;
-  } else if width < 1920 && height < 1080 {
-    thresholds[1] = threshold_base << 1;
   } else {
-    thresholds[1] = (5 * threshold_base) >> 1;
+    threshold_base = (3 * threshold_base) >> 1;
+    thresholds[0] = threshold_base;
+    thresholds[2] = threshold_base << 7;
+    if width >= 1280 && height >= 720 {
+      thresholds[2] <<= 1;
+    }
+
+    const QINDEX_HIGH_THRESHOLD: i64 = 220;
+    const QINDEX_LOW_THRESHOLD: i64 = 200;
+    if width * height <= 352 * 288 {
+      if base_q >= QINDEX_HIGH_THRESHOLD {
+        threshold_base = (5 * threshold_base) >> 1;
+        thresholds[0] = threshold_base >> 3;
+        thresholds[1] = threshold_base << 2;
+        thresholds[2] = threshold_base << 5;
+      } else if base_q < QINDEX_LOW_THRESHOLD {
+        thresholds[0] = threshold_base >> 3;
+        thresholds[1] = threshold_base >> 1;
+        thresholds[2] = threshold_base << 3;
+      } else {
+        let q_diff_low = (base_q - QINDEX_LOW_THRESHOLD) as u32;
+        let q_diff_high = (QINDEX_HIGH_THRESHOLD - base_q) as u32;
+        let threshold_diff =
+          (QINDEX_HIGH_THRESHOLD - QINDEX_LOW_THRESHOLD) as u32;
+        let threshold_base_high = (5 * threshold_base) >> 1;
+        threshold_base = (q_diff_low * threshold_base_high
+          + q_diff_high * threshold_base)
+          / threshold_diff;
+        thresholds[0] = threshold_base >> 3;
+        thresholds[1] = ((q_diff_low * threshold_base)
+          + q_diff_high * (threshold_base >> 1))
+          / threshold_diff;
+        thresholds[2] = ((q_diff_low * (threshold_base << 5))
+          + q_diff_high * (threshold_base << 3))
+          / threshold_diff;
+      }
+    } else if width < 1280 && height < 720 {
+      thresholds[1] = (5 * threshold_base) >> 2;
+    } else if width < 1920 && height < 1080 {
+      thresholds[1] = threshold_base << 1;
+    } else {
+      thresholds[1] = (5 * threshold_base) >> 1;
+    }
   }
+
+  thresholds[0] <<= 10;
+  thresholds[1] <<= 10;
+  thresholds[2] <<= 8;
 
   thresholds
 }

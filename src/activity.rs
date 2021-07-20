@@ -68,36 +68,58 @@ impl ActivityMask {
   }
 }
 
-// Adapted from the source variance calculation in cdef_dist_wxh_8x8.
-#[inline(never)]
-fn variance_8x8<T: Pixel>(src: &PlaneRegion<'_, T>) -> u32 {
-  debug_assert!(src.plane_cfg.xdec == 0);
-  debug_assert!(src.plane_cfg.ydec == 0);
+macro_rules! variance {
+  ($($SIZE:expr),*) => {
+    $(
+      paste::item! {
+        // Adapted from the source variance calculation in cdef_dist_wxh_8x8.
+        pub(crate) fn [<variance_ $SIZE x $SIZE>]<T: Pixel>(src: &PlaneRegion<'_, T>) -> u32 {
+          debug_assert!(src.plane_cfg.xdec == 0);
+          debug_assert!(src.plane_cfg.ydec == 0);
 
-  // Sum into columns to improve auto-vectorization
-  let mut sum_s_cols: [u16; 8] = [0; 8];
-  let mut sum_s2_cols: [u32; 8] = [0; 8];
+          // Sum into columns to improve auto-vectorization
+          let mut sum_s_cols: [u16; $SIZE] = [0; $SIZE];
+          let mut sum_s2_cols: [u32; $SIZE] = [0; $SIZE];
 
-  // Check upfront that 8 rows are available.
-  let _row = &src[7];
+          // Check upfront that $SIZE rows are available.
+          let _row = &src[$SIZE - 1];
 
-  for j in 0..8 {
-    let row = &src[j][0..8];
-    for (sum_s, sum_s2, s) in izip!(&mut sum_s_cols, &mut sum_s2_cols, row) {
-      // Don't convert directly to u32 to allow better vectorization
-      let s: u16 = u16::cast_from(*s);
-      *sum_s += s;
+          for j in 0..$SIZE {
+            let row = &src[j][0..$SIZE];
+            for (sum_s, sum_s2, s) in izip!(&mut sum_s_cols, &mut sum_s2_cols, row) {
+              // Don't convert directly to u32 to allow better vectorization
+              let s: u16 = u16::cast_from(*s);
+              *sum_s += s;
 
-      // Convert to u32 to avoid overflows when multiplying
-      let s: u32 = s as u32;
-      *sum_s2 += s * s;
-    }
+              // Convert to u32 to avoid overflows when multiplying
+              let s: u32 = s as u32;
+              *sum_s2 += s * s;
+            }
+          }
+
+          // 8x8 can safely use u32 to be faster
+          // Branching is optimized away at compile time
+          if $SIZE == 8 {
+            // Sum together the sum of columns
+            let sum_s = sum_s_cols.iter().map(|&a| a as u32).sum::<u32>();
+            let sum_s2 = sum_s2_cols.iter().map(|&a| a as u32).sum::<u32>();
+
+            // Use sums to calculate variance
+            sum_s2 - ((sum_s * sum_s + 32) >> 6)
+          } else {
+            // Sum together the sum of columns
+            let sum_s = sum_s_cols.iter().map(|&a| a as u64).sum::<u64>();
+            let sum_s2 = sum_s2_cols.iter().map(|&a| a as u64).sum::<u64>();
+
+            // Use sums to calculate variance
+            let result = sum_s2 - ((sum_s * sum_s + 32) >> ($SIZE - 2));
+            debug_assert!(result <= u32::MAX as u64);
+            result as u32
+          }
+        }
+      }
+    )*
   }
-
-  // Sum together the sum of columns
-  let sum_s = sum_s_cols.iter().map(|&a| u32::cast_from(a)).sum::<u32>();
-  let sum_s2 = sum_s2_cols.iter().sum::<u32>();
-
-  // Use sums to calculate variance
-  sum_s2 - ((sum_s * sum_s + 32) >> 6)
 }
+
+variance!(8, 16, 32, 64);
