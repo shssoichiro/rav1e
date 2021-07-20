@@ -2706,7 +2706,12 @@ fn encode_partition_topdown<T: Pixel, W: Writer>(
   } else if can_split {
     debug_assert!(bsize.is_sqr());
 
-    if let Some(variance_split_thresholds) = fi.variance_partition_thresholds {
+    if fi.variance_partition_thresholds.is_some()
+      && (fi.frame_type == FrameType::KEY
+        || fi.frame_type == FrameType::INTRA_ONLY)
+    {
+      let variance_split_thresholds =
+        fi.variance_partition_thresholds.unwrap();
       let threshold = match bsize {
         BlockSize::BLOCK_64X64 => variance_split_thresholds[0],
         BlockSize::BLOCK_32X32 => variance_split_thresholds[1],
