@@ -146,6 +146,8 @@ impl<T: Pixel> SceneChangeDetector<T> {
       return false;
     }
     if distance >= self.encoder_config.max_key_frame_interval {
+      self.frame_buffer.clear();
+      self.score_deque.clear();
       return true;
     }
 
