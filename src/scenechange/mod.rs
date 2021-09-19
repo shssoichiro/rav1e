@@ -229,7 +229,7 @@ impl<T: Pixel> SceneChangeDetector<T> {
       self.cost_scenecut(frame1, frame2)
     };
 
-    // Subtract the average metric value of surrounding frames from the current one
+    // Subtract the highest metric value of surrounding frames from the current one
     // It makes the peaks in the metric more distinct
     if self.speed_mode != SceneDetectionSpeed::Fast && self.deque_offset > 0 {
       if input_frameno == 1 {
@@ -237,27 +237,30 @@ impl<T: Pixel> SceneChangeDetector<T> {
         // It should always be 0 because the first frame of the video is always a keyframe.
         result.backward_adjusted_cost = 0.0;
       } else {
-        let count = cmp::min(self.deque_offset, self.score_deque.len());
-        let sum = self
-          .score_deque
-          .iter()
-          .take(self.deque_offset)
-          .map(|i| i.inter_cost)
-          .sum::<f64>();
-        result.backward_adjusted_cost =
-          result.inter_cost - (sum / count as f64);
-        if result.backward_adjusted_cost < 0.0 {
-          result.backward_adjusted_cost = 0.0;
+        let mut adjusted_cost = f64::MAX;
+        for other_cost in
+          self.score_deque.iter().take(self.deque_offset).map(|i| i.inter_cost)
+        {
+          let this_cost = result.inter_cost - other_cost;
+          if this_cost < adjusted_cost {
+            adjusted_cost = this_cost;
+          }
+          if adjusted_cost < 0.0 {
+            adjusted_cost = 0.0;
+            break;
+          }
         }
+        result.backward_adjusted_cost = adjusted_cost;
       }
       if !self.score_deque.is_empty() {
         for i in 0..(cmp::min(self.deque_offset, self.score_deque.len())) {
-          let count = i + 1;
-          let sum =
-            self.score_deque.iter().take(i).map(|i| i.inter_cost).sum::<f64>()
-              + result.inter_cost;
-          self.score_deque[i].forward_adjusted_cost =
-            self.score_deque[i].inter_cost - (sum / count as f64);
+          let adjusted_cost =
+            self.score_deque[i].inter_cost - result.inter_cost;
+          if i == 0
+            || adjusted_cost < self.score_deque[i].forward_adjusted_cost
+          {
+            self.score_deque[i].forward_adjusted_cost = adjusted_cost;
+          }
           if self.score_deque[i].forward_adjusted_cost < 0.0 {
             self.score_deque[i].forward_adjusted_cost = 0.0;
           }
@@ -289,7 +292,7 @@ impl<T: Pixel> SceneChangeDetector<T> {
       // Check for scenecut after the flashes
       // No frames over threshold forward
       // and some frames over threshold backward
-      if forward_over_tr_count == 0 && back_over_tr_count > 1 {
+      if forward_over_tr_count == 0 && back_over_tr_count > 0 {
         return (true, score);
       }
 
