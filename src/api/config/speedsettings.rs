@@ -83,10 +83,9 @@ pub struct SpeedSettings {
   /// Enabled is slower.
   pub use_satd_subpel: bool,
 
-  /// Use non-square partition type everywhere
-  ///
-  /// Enabled is slower.
-  pub non_square_partition: bool,
+  /// Allow non-square partition type outside of frame borders
+  /// on any blocks above this size.
+  pub non_square_partition_threshold: BlockSize,
 
   /// Search level for segmentation.
   ///
@@ -135,7 +134,7 @@ impl Default for SpeedSettings {
       lrf: true,
       sgr_complexity: SGRComplexityLevel::Full,
       use_satd_subpel: true,
-      non_square_partition: true,
+      non_square_partition_threshold: BlockSize::BLOCK_4X4,
       segmentation: SegmentationLevel::Full,
       enable_inter_tx_split: false,
       fine_directional_intra: true,
@@ -155,7 +154,7 @@ impl SpeedSettings {
     }
 
     if speed >= 2 {
-      settings.non_square_partition = false;
+      settings.non_square_partition_threshold = BlockSize::BLOCK_8X8;
     }
 
     if speed >= 3 {

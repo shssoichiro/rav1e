@@ -1945,7 +1945,7 @@ fn log_q_exp_overflow() {
       cdef: true,
       lrf: true,
       use_satd_subpel: false,
-      non_square_partition: false,
+      non_square_partition_threshold: BlockSize::BLOCK_64X64,
       ..Default::default()
     },
   };
@@ -2009,7 +2009,7 @@ fn guess_frame_subtypes_assert() {
       cdef: true,
       lrf: true,
       use_satd_subpel: false,
-      non_square_partition: false,
+      non_square_partition_threshold: BlockSize::BLOCK_64X64,
       ..Default::default()
     },
   };

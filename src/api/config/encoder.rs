@@ -255,8 +255,8 @@ impl fmt::Display for EncoderConfig {
       ("cdef", self.speed_settings.cdef.to_string()),
       ("use_satd_subpel", self.speed_settings.use_satd_subpel.to_string()),
       (
-        "non_square_partition",
-        self.speed_settings.non_square_partition.to_string(),
+        "non_square_partition_threshold",
+        self.speed_settings.non_square_partition_threshold.to_string(),
       ),
       ("enable_timing_info", self.enable_timing_info.to_string()),
       (
