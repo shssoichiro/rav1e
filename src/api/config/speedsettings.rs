@@ -154,7 +154,7 @@ impl SpeedSettings {
     }
 
     if speed >= 2 {
-      settings.non_square_partition_threshold = BlockSize::BLOCK_16X16;
+      settings.non_square_partition_threshold = BlockSize::BLOCK_8X8;
     }
 
     if speed >= 3 {
