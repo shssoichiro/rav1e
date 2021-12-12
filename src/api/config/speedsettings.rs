@@ -84,7 +84,7 @@ pub struct SpeedSettings {
   pub use_satd_subpel: bool,
 
   /// Allow non-square partition type outside of frame borders
-  /// on any blocks above this size.
+  /// on any blocks below this size.
   pub non_square_partition_threshold: BlockSize,
 
   /// Search level for segmentation.
@@ -134,7 +134,7 @@ impl Default for SpeedSettings {
       lrf: true,
       sgr_complexity: SGRComplexityLevel::Full,
       use_satd_subpel: true,
-      non_square_partition_threshold: BlockSize::BLOCK_4X4,
+      non_square_partition_threshold: BlockSize::BLOCK_64X64,
       segmentation: SegmentationLevel::Full,
       enable_inter_tx_split: false,
       fine_directional_intra: true,
