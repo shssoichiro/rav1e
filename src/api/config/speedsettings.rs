@@ -104,6 +104,9 @@ pub struct SpeedSettings {
   /// search is slower.
   pub me_allow_full_search: bool,
 
+  /// Early exit partition split search when partition RD cost is zero.
+  pub zero_rd_cost_early_exit: bool,
+
   // NOTE: put enums and basic type fields above
   /// Range of partition sizes that can be used. Larger ranges are slower.
   ///
@@ -141,6 +144,7 @@ impl Default for SpeedSettings {
       enable_inter_tx_split: false,
       fine_directional_intra: true,
       me_allow_full_search: true,
+      zero_rd_cost_early_exit: false,
     }
   }
 }
@@ -153,6 +157,7 @@ impl SpeedSettings {
 
     if speed >= 1 {
       settings.segmentation = SegmentationLevel::Simple;
+      settings.zero_rd_cost_early_exit = true;
     }
 
     if speed >= 2 {

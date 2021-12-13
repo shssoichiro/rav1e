@@ -2370,7 +2370,7 @@ fn encode_partition_bottomup<T: Pixel, W: Writer>(
   let must_split =
     is_square && (bsize > fi.partition_range.max || !has_cols || !has_rows);
 
-  let can_split = // FIXME: sub-8x8 inter blocks not supported for non-4:2:0 sampling
+  let mut can_split = // FIXME: sub-8x8 inter blocks not supported for non-4:2:0 sampling
     if fi.frame_type.has_inter() &&
       fi.sequence.chroma_sampling != ChromaSampling::Cs420 &&
       bsize <= BlockSize::BLOCK_8X8 {
@@ -2417,6 +2417,11 @@ fn encode_partition_bottomup<T: Pixel, W: Writer>(
     best_partition = PartitionType::PARTITION_NONE;
     best_rd = rd_cost;
     rdo_output.part_modes.push(mode_decision.clone());
+    if fi.config.speed_settings.zero_rd_cost_early_exit
+      && rd_cost < f64::EPSILON
+    {
+      can_split = false;
+    }
 
     if !can_split {
       encode_block_with_modes(
@@ -2646,7 +2651,7 @@ fn encode_partition_topdown<T: Pixel, W: Writer>(
   let must_split =
     is_square && (bsize > fi.partition_range.max || !has_cols || !has_rows);
 
-  let can_split = // FIXME: sub-8x8 inter blocks not supported for non-4:2:0 sampling
+  let mut can_split = // FIXME: sub-8x8 inter blocks not supported for non-4:2:0 sampling
     if fi.frame_type.has_inter() &&
       fi.sequence.chroma_sampling != ChromaSampling::Cs420 &&
       bsize <= BlockSize::BLOCK_8X8 {
@@ -2661,6 +2666,11 @@ fn encode_partition_topdown<T: Pixel, W: Writer>(
       rd_cost: std::f64::MAX,
       part_modes: ArrayVec::new(),
     });
+  if fi.config.speed_settings.zero_rd_cost_early_exit
+    && rdo_output.rd_cost < f64::EPSILON
+  {
+    can_split = false;
+  }
   let partition: PartitionType;
 
   if must_split {
