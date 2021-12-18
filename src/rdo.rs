@@ -1316,7 +1316,7 @@ fn inter_frame_rdo_mode_decision<T: Pixel>(
   // again, max of 7 ref slots
   let mut ref_slot_set = ArrayVec::<_, 7>::new();
   // our implementation never returns more than 3 at the moment
-  let mut mvs_from_me = ArrayVec::<_, 3>::new();
+  let mut mvs_from_me = ArrayVec::<[MotionVector; 2], 3>::new();
   let mut fwdref = None;
   let mut bwdref = None;
 
@@ -1365,10 +1365,20 @@ fn inter_frame_rdo_mode_decision<T: Pixel>(
       pmv[1] = mv_stack[1].this_mv;
     }
 
-    let res = motion_estimation(fi, ts, bsize, tile_bo, ref_frames[0], pmv);
-    let b_me = res.0;
+    let b_me = estimate_motion(
+      fi,
+      ts,
+      bsize,
+      tile_bo,
+      ref_frames[0],
+      FullpelConfig::default_corner_config(),
+      pmv,
+      fi.config.speed_settings.motion.me_allow_full_search,
+      0,
+      true,
+    );
 
-    mvs_from_me.push([b_me, MotionVector::default()]);
+    mvs_from_me.push([b_me.unwrap().mv, MotionVector::default()]);
 
     for &x in RAV1E_INTER_MODES_MINIMAL {
       inter_mode_set.push((x, i));

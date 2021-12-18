@@ -81,11 +81,11 @@ impl IndexMut<usize> for FrameMEStats {
 
 /// Result of motion search.
 #[derive(Debug, Copy, Clone)]
-struct MotionSearchResult {
+pub(crate) struct MotionSearchResult {
   /// Motion vector chosen by the motion search.
-  mv: MotionVector,
-  /// Rate distortion cost associated with `mv`.
-  cost: u64,
+  pub mv: MotionVector,
+  /// Rate distortion data associated with `mv`.
+  pub rd: MVCandidateRD,
 }
 
 impl MotionSearchResult {
@@ -96,19 +96,22 @@ impl MotionSearchResult {
   /// result will always be replaced.
   #[inline(always)]
   fn empty() -> MotionSearchResult {
-    MotionSearchResult { mv: MotionVector::default(), cost: u64::MAX }
+    MotionSearchResult {
+      mv: MotionVector::default(),
+      rd: MVCandidateRD::empty(),
+    }
   }
 
   /// Check if the value should be considered to be empty.
   #[inline(always)]
   fn is_empty(&self) -> bool {
-    self.cost == u64::MAX
+    self.rd.cost == u64::MAX
   }
 }
 
 /// Holds data from computing rate distortion of a motion vector.
 #[derive(Debug, Copy, Clone)]
-struct MVCandidateRD {
+pub(crate) struct MVCandidateRD {
   /// Rate distortion cost of the motion vector.
   cost: u64,
   /// Distortion metric value for the motion vector.
@@ -129,7 +132,7 @@ impl MVCandidateRD {
 
 /// Result for a fullpel only motion search.
 #[derive(Debug, Copy, Clone)]
-struct FullpelSearchResult {
+pub(crate) struct FullpelSearchResult {
   /// Motion vector chosen by the motion search.
   mv: MotionVector,
   /// Rate distortion data associated with `mv`.
@@ -158,7 +161,7 @@ impl FullpelSearchResult {
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-enum MVSamplingMode {
+pub(crate) enum MVSamplingMode {
   INIT,
   CORNER { right: bool, bottom: bool },
 }
@@ -270,8 +273,10 @@ fn estimate_sb_motion<T: Pixel>(
         // Run motion estimation.
         // Note that the initial search (init) instructs the called function to
         // perform a more extensive search.
+        let global_mv = [MotionVector { row: 0, col: 0 }; 2];
         if let Some(results) = estimate_motion(
-          fi, ts, bsize, sub_bo, ref_frame, corner, init, ssdec,
+          fi, ts, bsize, sub_bo, ref_frame, corner, global_mv, init, ssdec,
+          false,
         ) {
           // normalize sad to 128x128 block
           let sad = results.rd.sad << ((MAX_MIB_SIZE_LOG2 - mv_size_log2) * 2);
@@ -507,89 +512,17 @@ fn get_subset_predictors<T: Pixel>(
   MotionEstimationSubsets { min_sad, median, subset_b, subset_c }
 }
 
-pub fn motion_estimation<T: Pixel>(
-  fi: &FrameInvariants<T>, ts: &TileStateMut<'_, T>, bsize: BlockSize,
-  tile_bo: TileBlockOffset, ref_frame: RefType, pmv: [MotionVector; 2],
-) -> (MotionVector, u32) {
-  match fi.rec_buffer.frames[fi.ref_frames[ref_frame.to_index()] as usize] {
-    Some(ref rec) => {
-      let blk_w = bsize.width();
-      let blk_h = bsize.height();
-      let frame_bo = ts.to_frame_block_offset(tile_bo);
-      let (mvx_min, mvx_max, mvy_min, mvy_max) =
-        get_mv_range(fi.w_in_b, fi.h_in_b, frame_bo, blk_w, blk_h);
-
-      // 0.5 is a fudge factor
-      let lambda = (fi.me_lambda * 256.0 * 0.5) as u32;
-
-      // Full-pixel motion estimation
-
-      let po = frame_bo.to_luma_plane_offset();
-      let area = Area::BlockStartingAt { bo: tile_bo.0 };
-      let org_region: &PlaneRegion<T> =
-        &ts.input_tile.planes[0].subregion(area);
-      let p_ref: &Plane<T> = &rec.frame.planes[0];
-
-      let best = full_pixel_me(
-        fi,
-        ts,
-        org_region,
-        p_ref,
-        tile_bo,
-        po,
-        lambda,
-        pmv,
-        bsize,
-        mvx_min,
-        mvx_max,
-        mvy_min,
-        mvy_max,
-        ref_frame,
-        &FullpelConfig::create_motion_estimation_config(),
-      );
-
-      let sad = best.rd.sad;
-
-      let mut best = MotionSearchResult { mv: best.mv, cost: best.rd.cost };
-
-      let use_satd: bool = fi.config.speed_settings.motion.use_satd_subpel;
-      if use_satd {
-        best.cost = get_fullpel_mv_rd(
-          fi,
-          po,
-          org_region,
-          p_ref,
-          fi.sequence.bit_depth,
-          pmv,
-          lambda,
-          use_satd,
-          mvx_min,
-          mvx_max,
-          mvy_min,
-          mvy_max,
-          bsize,
-          best.mv,
-        )
-        .cost;
-      }
-
-      sub_pixel_me(
-        fi, po, org_region, p_ref, lambda, pmv, mvx_min, mvx_max, mvy_min,
-        mvy_max, bsize, use_satd, &mut best, ref_frame,
-      );
-
-      (best.mv, sad)
-    }
-
-    None => (MotionVector::default(), u32::MAX),
-  }
-}
-
-fn estimate_motion<T: Pixel>(
+pub(crate) fn estimate_motion<T: Pixel>(
   fi: &FrameInvariants<T>, ts: &TileStateMut<'_, T>, bsize: BlockSize,
   tile_bo: TileBlockOffset, ref_frame: RefType, corner: MVSamplingMode,
-  extensive_search: bool, ssdec: u8,
-) -> Option<FullpelSearchResult> {
+  pmv: [MotionVector; 2], extensive_search: bool, ssdec: u8,
+  perform_subpel: bool,
+) -> Option<MotionSearchResult> {
+  debug_assert!(
+    !(ssdec > 0 && perform_subpel),
+    "Cannot perform subpel ME with subsampling"
+  );
+
   if let Some(ref rec) =
     fi.rec_buffer.frames[fi.ref_frames[ref_frame.to_index()] as usize]
   {
@@ -599,8 +532,6 @@ fn estimate_motion<T: Pixel>(
     let frame_bo = ts.to_frame_block_offset(tile_bo);
     let (mvx_min, mvx_max, mvy_min, mvy_max) =
       get_mv_range(fi.w_in_b, fi.h_in_b, frame_bo, blk_w, blk_h);
-
-    let global_mv = [MotionVector { row: 0, col: 0 }; 2];
 
     // TODO: Move lambda setup elsewhere
     // 0.5 and 0.125 are a fudge factors
@@ -629,7 +560,7 @@ fn estimate_motion<T: Pixel>(
       _ => unimplemented!(),
     };
 
-    let mut results: FullpelSearchResult = full_pixel_me(
+    let best: FullpelSearchResult = full_pixel_me(
       fi,
       ts,
       org_region,
@@ -637,7 +568,7 @@ fn estimate_motion<T: Pixel>(
       tile_bo,
       po,
       lambda,
-      global_mv,
+      pmv,
       bsize,
       mvx_min,
       mvx_max,
@@ -647,32 +578,56 @@ fn estimate_motion<T: Pixel>(
       &FullpelConfig { corner, extensive_search, ssdec },
     );
 
-    results.rd.sad <<= ssdec * 2;
-    results.mv = MotionVector {
-      col: results.mv.col << ssdec,
-      row: results.mv.row << ssdec,
-    };
+    let mut best = MotionSearchResult { mv: best.mv, rd: best.rd };
+    if !perform_subpel {
+      best.rd.sad <<= ssdec * 2;
+      best.mv =
+        MotionVector { col: best.mv.col << ssdec, row: best.mv.row << ssdec };
+      return Some(best);
+    }
 
-    Some(results)
+    let use_satd: bool = fi.config.speed_settings.motion.use_satd_subpel;
+    if use_satd {
+      best.rd.cost = get_fullpel_mv_rd(
+        fi,
+        po,
+        org_region,
+        p_ref,
+        fi.sequence.bit_depth,
+        pmv,
+        lambda,
+        use_satd,
+        mvx_min,
+        mvx_max,
+        mvy_min,
+        mvy_max,
+        bsize,
+        best.mv,
+      )
+      .cost;
+    }
+
+    sub_pixel_me(
+      fi, po, org_region, p_ref, lambda, pmv, mvx_min, mvx_max, mvy_min,
+      mvy_max, bsize, use_satd, &mut best, ref_frame,
+    );
+
+    Some(best)
   } else {
     None
   }
 }
 
-struct FullpelConfig {
+pub(crate) struct FullpelConfig {
   corner: MVSamplingMode,
   extensive_search: bool,
   ssdec: u8,
 }
 
 impl FullpelConfig {
-  /// Configuration for motion estimation with full search and sub-sampling disabled.
-  fn create_motion_estimation_config() -> Self {
-    FullpelConfig {
-      corner: MVSamplingMode::CORNER { right: true, bottom: true },
-      extensive_search: false,
-      ssdec: 0,
-    }
+  /// Get the default `corner` parameter for fullpel search
+  pub(crate) fn default_corner_config() -> MVSamplingMode {
+    MVSamplingMode::CORNER { right: true, bottom: true }
   }
 }
 
@@ -1338,14 +1293,14 @@ fn subpel_diamond_search<T: Pixel>(
       )
       .cost;
 
-      if rd_cost < best_cand.cost {
+      if rd_cost < best_cand.rd.cost {
         best_cand.mv = cand_mv;
-        best_cand.cost = rd_cost;
+        best_cand.rd.cost = rd_cost;
       }
     }
 
     // Continue the search at this scale until a better candidate isn't found.
-    if current.cost <= best_cand.cost {
+    if current.rd.cost <= best_cand.rd.cost {
       if diamond_radius_log2 == diamond_radius_end_log2 {
         break;
       } else {
