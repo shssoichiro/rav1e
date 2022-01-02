@@ -138,7 +138,9 @@ impl SpeedSettings {
 
     if speed >= 5 {
       settings.sgr_complexity = SGRComplexityLevel::Reduced;
+
       settings.motion.include_near_mvs = false;
+      settings.motion.me_allow_full_search = false;
     }
 
     if speed >= 6 {
@@ -146,11 +148,11 @@ impl SpeedSettings {
 
       settings.transform.rdo_tx_decision = false;
       settings.transform.reduced_tx_set = true;
-
-      settings.motion.me_allow_full_search = false;
     }
 
     if speed >= 7 {
+      settings.fast_deblock = true;
+
       settings.prediction.prediction_modes = PredictionModesSetting::Simple;
     }
 
@@ -161,7 +163,6 @@ impl SpeedSettings {
       // backwards references. low_latency false enables both forward and
       // backwards references.
       settings.multiref = false;
-      settings.fast_deblock = true;
     }
 
     if speed >= 9 {
