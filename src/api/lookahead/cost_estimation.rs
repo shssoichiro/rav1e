@@ -25,7 +25,7 @@ pub(crate) const IMP_BLOCK_AREA_IN_MV_UNITS: i64 =
   IMP_BLOCK_SIZE_IN_MV_UNITS * IMP_BLOCK_SIZE_IN_MV_UNITS;
 
 #[hawktracer(estimate_intra_costs)]
-pub(crate) fn estimate_intra_costs<T: Pixel>(
+pub(crate) fn estimate_block_intra_costs<T: Pixel>(
   frame: &Frame<T>, bit_depth: usize, cpu_feature_level: CpuFeatureLevel,
 ) -> Box<[u32]> {
   let plane = &frame.planes[0];
@@ -117,6 +117,15 @@ pub(crate) fn estimate_intra_costs<T: Pixel>(
   intra_costs.into_boxed_slice()
 }
 
+pub(crate) fn estimate_frame_intra_cost<T: Pixel>(
+  frame: &Frame<T>, bit_depth: usize, cpu_feature_level: CpuFeatureLevel,
+) -> f64 {
+  let intra_costs =
+    estimate_block_intra_costs(frame, bit_depth, cpu_feature_level);
+  intra_costs.iter().map(|&cost| cost as u64).sum::<u64>() as f64
+    / intra_costs.len() as f64
+}
+
 #[hawktracer(estimate_importance_block_difference)]
 pub(crate) fn estimate_importance_block_difference<T: Pixel>(
   frame: Arc<Frame<T>>, ref_frame: Arc<Frame<T>>,
@@ -176,7 +185,7 @@ pub(crate) fn estimate_importance_block_difference<T: Pixel>(
 }
 
 #[hawktracer(estimate_inter_costs)]
-pub(crate) fn estimate_inter_costs<T: Pixel>(
+pub(crate) fn estimate_block_inter_costs<T: Pixel>(
   frame: Arc<Frame<T>>, ref_frame: Arc<Frame<T>>, bit_depth: usize,
   mut config: EncoderConfig, sequence: Arc<Sequence>,
 ) -> Box<[u32]> {
@@ -252,4 +261,15 @@ pub(crate) fn compute_motion_vectors<T: Pixel>(
       let ts = &mut ctx.ts;
       estimate_tile_motion(fi, ts, inter_cfg);
     });
+}
+
+pub(crate) fn estimate_frame_inter_cost<T: Pixel>(
+  frame: Arc<Frame<T>>, ref_frame: Arc<Frame<T>>, bit_depth: usize,
+  mut config: EncoderConfig, sequence: Arc<Sequence>,
+) -> f64 {
+  let inter_costs =
+    estimate_block_inter_costs(frame, ref_frame, bit_depth, config, sequence);
+
+  inter_costs.iter().map(|&cost| cost as u64).sum::<u64>() as f64
+    / inter_costs.len() as f64
 }

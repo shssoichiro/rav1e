@@ -24,6 +24,11 @@ pub struct SpeedSettings {
   /// Enabled is slower.
   pub multiref: bool,
 
+  /// The maximum depth of a pyramid for a group of frames.
+  ///
+  /// The AV1 standard supports up to 5.
+  pub max_pyramid_depth: usize,
+
   /// Enables fast deblocking filter.
   pub fast_deblock: bool,
 
@@ -68,6 +73,7 @@ impl Default for SpeedSettings {
   fn default() -> Self {
     SpeedSettings {
       multiref: true,
+      max_pyramid_depth: 5,
       fast_deblock: false,
       rdo_lookahead_frames: 40,
       scene_detection_mode: SceneDetectionSpeed::Standard,

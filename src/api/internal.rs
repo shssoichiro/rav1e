@@ -9,7 +9,7 @@
 #![deny(missing_docs)]
 
 use crate::activity::ActivityMask;
-use crate::api::lookahead::*;
+use crate::api::{lookahead::*, SceneDetectionSpeed};
 use crate::api::{EncoderConfig, EncoderStatus, FrameType, Opaque, Packet};
 use crate::color::ChromaSampling::Cs400;
 use crate::cpu_features::CpuFeatureLevel;
@@ -35,10 +35,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// The set of options that controls frame re-ordering and reference picture
-///  selection.
-/// The options stored here are invariant over the whole encode.
-#[derive(Debug, Clone, Copy)]
+/// The set of options that controls frame re-ordering and reference picture selection.
+/// The options stored here are applicable for one sub-GOP.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct InterConfig {
   /// Whether frame re-ordering is enabled.
   reorder: bool,
@@ -61,34 +60,46 @@ pub struct InterConfig {
 impl InterConfig {
   pub(crate) fn new(enc_config: &EncoderConfig) -> InterConfig {
     let reorder = !enc_config.low_latency;
-    // A group always starts with (group_output_len - group_input_len) hidden
-    //  frames, followed by group_input_len shown frames.
-    // The shown frames iterate over the input frames in order, with frames
-    //  already encoded as hidden frames now displayed with Show Existing
-    //  Frame.
-    // For example, for a pyramid depth of 2, the group is as follows:
-    //                      |TU         |TU |TU |TU
-    // idx_in_group_output:   0   1   2   3   4   5
-    // input_frameno:         4   2   1  SEF  3  SEF
-    // output_frameno:        1   2   3   4   5   6
-    // level:                 0   1   2   1   2   0
-    //                        ^^^^^   ^^^^^^^^^^^^^
-    //                        hidden      shown
-    // TODO: This only works for pyramid_depth <= 2 --- after that we need
-    //  more hidden frames in the middle of the group.
-    let pyramid_depth = if reorder { 2 } else { 0 };
-    let group_input_len = 1 << pyramid_depth;
-    let group_output_len = group_input_len + pyramid_depth;
+    let pyramid_depth = if reorder {
+      enc_config.speed_settings.max_pyramid_depth as u64
+    } else {
+      0
+    };
     let switch_frame_interval = enc_config.switch_frame_interval;
-    assert!(switch_frame_interval % group_input_len == 0);
     InterConfig {
       reorder,
       multiref: reorder || enc_config.speed_settings.multiref,
       pyramid_depth,
-      group_input_len,
-      group_output_len,
       switch_frame_interval,
+      ..InterConfig::default()
     }
+    .copy_with_depth(pyramid_depth)
+  }
+
+  // A group always starts with (group_output_len - group_input_len) hidden
+  //  frames, followed by group_input_len shown frames.
+  // The shown frames iterate over the input frames in order, with frames
+  //  already encoded as hidden frames now displayed with Show Existing
+  //  Frame.
+  // For example, for a pyramid depth of 2, the group is as follows:
+  //                      |TU         |TU |TU |TU
+  // idx_in_group_output:   0   1   2   3   4   5
+  // input_frameno:         4   2   1  SEF  3  SEF
+  // output_frameno:        1   2   3   4   5   6
+  // level:                 0   1   2   1   2   0
+  //                        ^^^^^   ^^^^^^^^^^^^^
+  //                        hidden      shown
+  // TODO: This only works for pyramid_depth <= 2 --- after that we need
+  //  more hidden frames in the middle of the group.
+  pub(crate) fn copy_with_depth(mut self, depth: u64) -> InterConfig {
+    let pyramid_depth = depth.min(self.pyramid_depth);
+    let group_input_len = 1 << pyramid_depth;
+    let group_output_len = group_input_len + pyramid_depth;
+    assert!(self.switch_frame_interval % group_input_len == 0);
+    self.pyramid_depth = pyramid_depth;
+    self.group_input_len = group_input_len;
+    self.group_output_len = group_output_len;
+    self
   }
 
   /// Get the index of an output frame in its re-ordering group given the output
@@ -233,11 +244,6 @@ pub(crate) struct ContextInner<T: Pixel> {
   pub(super) frame_q: FrameQueue<T>,
   /// Maps *output_frameno* to frame data
   pub(super) frame_data: FrameDataQueue<T>,
-  /// A list of the input_frameno for keyframes in this encode.
-  /// Needed so that we don't need to keep all of the frame_invariants in
-  ///  memory for the whole life of the encode.
-  // TODO: Is this needed at all?
-  keyframes: BTreeSet<u64>,
   // TODO: Is this needed at all?
   keyframes_forced: BTreeSet<u64>,
   /// A storage space for reordered frames.
@@ -263,8 +269,6 @@ impl<T: Pixel> ContextInner<T> {
   pub fn new(enc: &EncoderConfig) -> Self {
     // initialize with temporal delimiter
     let packet_data = TEMPORAL_DELIMITER.to_vec();
-    let mut keyframes = BTreeSet::new();
-    keyframes.insert(0);
 
     let maybe_ac_qi_max =
       if enc.quantizer < 255 { Some(enc.quantizer as u8) } else { None };
@@ -281,17 +285,31 @@ impl<T: Pixel> ContextInner<T> {
       frames_processed: 0,
       frame_q: BTreeMap::new(),
       frame_data: BTreeMap::new(),
-      keyframes,
       keyframes_forced: BTreeSet::new(),
       packet_data,
       gop_output_frameno_start: BTreeMap::new(),
       gop_input_frameno_start: BTreeMap::new(),
-      keyframe_detector: SceneChangeDetector::new(
-        *enc,
-        CpuFeatureLevel::default(),
-        lookahead_distance,
-        seq.clone(),
-      ),
+      keyframe_detector: if enc.speed_settings.scene_detection_mode
+        == SceneDetectionSpeed::None
+      {
+        // We will still use this for pyramid selection, but we want to disable max intervals for that case
+        let mut enc = *enc;
+        enc.min_key_frame_interval = MIN_PYRAMID_WIDTH;
+        enc.max_key_frame_interval = u64::MAX;
+        SceneChangeDetector::new(
+          enc,
+          CpuFeatureLevel::default(),
+          lookahead_distance,
+          seq.clone(),
+        )
+      } else {
+        SceneChangeDetector::new(
+          *enc,
+          CpuFeatureLevel::default(),
+          lookahead_distance,
+          seq.clone(),
+        )
+      },
       config: Arc::new(*enc),
       seq,
       rc_state: RCState::new(
@@ -379,7 +397,7 @@ impl<T: Pixel> ContextInner<T> {
       }
     }
 
-    self.compute_frame_invariants();
+    self.compute_preliminary_frame_invariants();
 
     Ok(())
   }
@@ -437,10 +455,10 @@ impl<T: Pixel> ContextInner<T> {
     cmp::min(next_detected.unwrap(), next_limit)
   }
 
-  fn set_frame_properties(
+  fn set_preliminary_frame_properties(
     &mut self, output_frameno: u64,
   ) -> Result<(), EncoderStatus> {
-    let fi = self.build_frame_properties(output_frameno)?;
+    let fi = self.build_preliminary_frame_properties(output_frameno)?;
 
     let frame =
       self.frame_q.get(&fi.input_frameno).as_ref().unwrap().as_ref().unwrap();
@@ -462,7 +480,9 @@ impl<T: Pixel> ContextInner<T> {
     data_location
   }
 
-  fn build_frame_properties(
+  // For the preliminary frame properties, we will not do any frame reordering.
+  // This will come later in a pyramid decision pass.
+  fn build_preliminary_frame_properties(
     &mut self, output_frameno: u64,
   ) -> Result<FrameInvariants<T>, EncoderStatus> {
     let (prev_gop_output_frameno_start, prev_gop_input_frameno_start) =
@@ -484,55 +504,12 @@ impl<T: Pixel> ContextInner<T> {
 
     let output_frameno_in_gop =
       output_frameno - self.gop_output_frameno_start[&output_frameno];
-    let mut input_frameno = self.inter_cfg.get_input_frameno(
-      output_frameno_in_gop,
-      self.gop_input_frameno_start[&output_frameno],
-    );
+    let gop_input_frameno_start =
+      self.gop_input_frameno_start[&output_frameno];
+    let mut input_frameno = gop_input_frameno_start + output_frameno_in_gop;
 
     if self.needs_more_frame_q_lookahead(input_frameno) {
       return Err(EncoderStatus::NeedMoreData);
-    }
-
-    if output_frameno_in_gop > 0 {
-      let next_keyframe_input_frameno = self.next_keyframe_input_frameno(
-        self.gop_input_frameno_start[&output_frameno],
-        false,
-      );
-      let prev_input_frameno =
-        self.frame_data[&(output_frameno - 1)].fi.input_frameno;
-      if input_frameno >= next_keyframe_input_frameno {
-        if !self.inter_cfg.reorder
-          || ((output_frameno_in_gop - 1) % self.inter_cfg.group_output_len
-            == 0
-            && prev_input_frameno == (next_keyframe_input_frameno - 1))
-        {
-          input_frameno = next_keyframe_input_frameno;
-
-          // If we'll return early, do it before modifying the state.
-          match self.frame_q.get(&input_frameno) {
-            Some(Some(_)) => {}
-            _ => {
-              return Err(EncoderStatus::NeedMoreData);
-            }
-          }
-
-          *self.gop_output_frameno_start.get_mut(&output_frameno).unwrap() =
-            output_frameno;
-          *self.gop_input_frameno_start.get_mut(&output_frameno).unwrap() =
-            next_keyframe_input_frameno;
-        } else {
-          let fi = FrameInvariants::new_inter_frame(
-            &self.frame_data[&(output_frameno - 1)].fi,
-            &self.inter_cfg,
-            self.gop_input_frameno_start[&output_frameno],
-            output_frameno_in_gop,
-            next_keyframe_input_frameno,
-            self.config.error_resilient,
-          );
-          assert!(fi.invalid);
-          return Ok(fi);
-        }
-      }
     }
 
     match self.frame_q.get(&input_frameno) {
@@ -767,7 +744,7 @@ impl<T: Pixel> ContextInner<T> {
       .get_mut(&output_frameno)
       .unwrap()
       .fi
-      .lookahead_intra_costs = estimate_intra_costs(
+      .lookahead_intra_costs = estimate_block_intra_costs(
       &*self.frame_q[&fi.input_frameno].as_ref().unwrap(),
       fi.sequence.bit_depth,
       fi.cpu_feature_level,
@@ -778,28 +755,26 @@ impl<T: Pixel> ContextInner<T> {
   pub fn compute_keyframe_placement(
     &mut self, lookahead_frames: &[Arc<Frame<T>>],
   ) {
-    if self.keyframes_forced.contains(&self.next_lookahead_frame)
-      || self.keyframe_detector.analyze_next_frame(
-        lookahead_frames,
-        self.next_lookahead_frame,
-        *self.keyframes.iter().last().unwrap(),
-      )
-    {
-      self.keyframes.insert(self.next_lookahead_frame);
+    if self.keyframes_forced.contains(&self.next_lookahead_frame) {
+      self.keyframe_detector.keyframes.insert(self.next_lookahead_frame);
+    } else {
+      self
+        .keyframe_detector
+        .analyze_next_frame(lookahead_frames, self.next_lookahead_frame);
     }
 
     self.next_lookahead_frame += 1;
   }
 
   #[hawktracer(compute_frame_invariants)]
-  pub fn compute_frame_invariants(&mut self) {
-    while self.set_frame_properties(self.next_lookahead_output_frameno).is_ok()
+  pub fn compute_preliminary_frame_invariants(&mut self) {
+    while self
+      .set_preliminary_frame_properties(self.next_lookahead_output_frameno)
+      .is_ok()
     {
       self
         .compute_lookahead_motion_vectors(self.next_lookahead_output_frameno);
-      if self.config.temporal_rdo() {
-        self.compute_lookahead_intra_costs(self.next_lookahead_output_frameno);
-      }
+      self.compute_lookahead_intra_costs(self.next_lookahead_output_frameno);
       self.next_lookahead_output_frameno += 1;
     }
   }
@@ -1308,17 +1283,101 @@ impl<T: Pixel> ContextInner<T> {
     }
 
     // Find the next output_frameno corresponding to a non-skipped frame.
-    self.output_frameno = self
+    let frame_data = self
       .frame_data
       .iter()
       .skip_while(|(&output_frameno, _)| output_frameno < self.output_frameno)
       .find(|(_, data)| !data.fi.invalid)
-      .map(|(&output_frameno, _)| output_frameno)
       .ok_or(EncoderStatus::NeedMoreData)?; // TODO: doesn't play well with the below check?
+    self.output_frameno = *frame_data.0;
 
     let input_frameno = self.frame_data[&self.output_frameno].fi.input_frameno;
     if !self.needs_more_frames(input_frameno) {
       return Err(EncoderStatus::LimitReached);
+    }
+
+    let fi = &frame_data.1.fi;
+    if self.inter_cfg.reorder
+      && fi.pyramid_level == 0
+      && fi.frame_type != FrameType::KEY
+      && !fi.show_existing_frame
+    {
+      let next_keyframe = self.next_keyframe_input_frameno(
+        self.gop_input_frameno_start[&self.output_frameno],
+        false,
+      );
+      let lookahead_frames = self
+        .frame_data
+        .iter()
+        .skip_while(|(&output_frameno, _)| {
+          output_frameno < self.output_frameno
+        })
+        .take(self.config.speed_settings.rdo_lookahead_frames)
+        .collect::<Vec<_>>();
+      let mut frames_to_take = MAX_PYRAMID_WIDTH;
+      for (frameno, _) in &lookahead_frames {
+        if self.keyframe_detector.keyframes.contains(frameno) {
+          let distance = (**frameno - self.output_frameno) as usize;
+          // If there is a keyframe within this pyramid,
+          // trim this pyramid to end before the next keyframe.
+          if distance <= MAX_PYRAMID_WIDTH {
+            frames_to_take = distance;
+            break;
+          }
+          // If we know there is a keyframe after the end of this pyramid,
+          // we want to split it in the middle to make two similar-sized pyramids.
+          if distance > MAX_PYRAMID_WIDTH && distance - MAX_PYRAMID_WIDTH < 4 {
+            frames_to_take = distance / 2;
+            break;
+          }
+        }
+      }
+      // If we know the end of the video is upcoming,
+      // we want to split this pyramid in the middle as well.
+      if frames_to_take > MAX_PYRAMID_WIDTH
+        && lookahead_frames.len() > MAX_PYRAMID_WIDTH
+        && lookahead_frames.len()
+          < self.config.speed_settings.rdo_lookahead_frames
+      {
+        frames_to_take = lookahead_frames.len() / 2;
+      }
+
+      if self.config.speed_settings.scene_detection_mode
+        == SceneDetectionSpeed::None
+      {
+        // If we didn't already run scene detection, run it now to detect scene flashes.
+        for frameno in lookahead_frames.iter().map(|(k, _)| **k) {
+          let lookahead_frames = self
+            .frame_q
+            .range(frameno - 1..)
+            .filter_map(|(&_input_frameno, frame)| frame.clone())
+            .collect::<Vec<_>>();
+
+          if lookahead_frames.len() >= 2 {
+            self.keyframe_detector.analyze_next_frame(
+              &lookahead_frames,
+              self.next_lookahead_frame,
+            );
+          }
+        }
+      }
+      let mut updated_fis = select_pyramid_frames(
+        &lookahead_frames[..frames_to_take],
+        &self.keyframe_detector.keyframes,
+        &self.keyframe_detector.flashes,
+      );
+      let old_data =
+        self.frame_data.split_off(&updated_fis.previous_output_frame_range.0);
+      self.frame_data.append(&mut updated_fis.new_fis);
+      let frame_difference = self.frame_data.keys().last().unwrap()
+        - updated_fis.previous_output_frame_range.1;
+      old_data
+        .into_iter()
+        .skip_while(|(k, _v)| *k <= updated_fis.previous_output_frame_range.1)
+        .for_each(|(k, v)| {
+          self.frame_data.insert(k + frame_difference, v);
+        });
+      todo!("Do we need to adjust the self.output_group_whatevers?");
     }
 
     if self.config.temporal_rdo() {

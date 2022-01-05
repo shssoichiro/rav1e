@@ -15,6 +15,7 @@ use crate::frame::*;
 use crate::sad_row;
 use crate::util::Pixel;
 use rust_hawktracer::*;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::{cmp, u64};
 
@@ -65,6 +66,8 @@ pub struct SceneChangeDetector<T: Pixel> {
   cpu_feature_level: CpuFeatureLevel,
   encoder_config: EncoderConfig,
   sequence: Arc<Sequence>,
+  pub keyframes: BTreeSet<u64>,
+  pub flashes: BTreeSet<u64>,
 }
 
 impl<T: Pixel> SceneChangeDetector<T> {
@@ -112,6 +115,8 @@ impl<T: Pixel> SceneChangeDetector<T> {
       cpu_feature_level,
       encoder_config,
       sequence,
+      keyframes: [0].into(),
+      flashes: BTreeSet::new(),
     }
   }
 
@@ -126,12 +131,12 @@ impl<T: Pixel> SceneChangeDetector<T> {
   #[hawktracer(analyze_next_frame)]
   pub fn analyze_next_frame(
     &mut self, frame_set: &[Arc<Frame<T>>], input_frameno: u64,
-    previous_keyframe: u64,
   ) -> bool {
     // Use score deque for adaptive threshold for scene cut
     // Declare score_deque offset based on lookahead  for scene change scores
 
     // Find the distance to the previous keyframe.
+    let previous_keyframe = *self.keyframes.iter().last().unwrap();
     let distance = input_frameno - previous_keyframe;
 
     if frame_set.len() <= self.lookahead_offset {
@@ -144,6 +149,7 @@ impl<T: Pixel> SceneChangeDetector<T> {
       == SceneDetectionSpeed::None
     {
       if let Some(true) = self.handle_min_max_intervals(distance) {
+        self.keyframes.insert(input_frameno);
         return true;
       };
       return false;
@@ -178,7 +184,7 @@ impl<T: Pixel> SceneChangeDetector<T> {
     }
 
     // Adaptive scenecut check
-    let (scenecut, score) = self.adaptive_scenecut();
+    let (scenecut, score) = self.adaptive_scenecut(input_frameno);
     let scenecut = self.handle_min_max_intervals(distance).unwrap_or(scenecut);
     debug!(
       "[SC-Detect] Frame {}: Raw={:5.1}  ImpBl={:5.1}  Bwd={:5.1}  Fwd={:5.1}  Th={:.1}  {}",
@@ -195,6 +201,10 @@ impl<T: Pixel> SceneChangeDetector<T> {
     // and forward frames of length of lookahead offset
     if self.score_deque.len() > 5 + self.lookahead_offset {
       self.score_deque.pop();
+    }
+
+    if scenecut {
+      self.keyframes.insert(input_frameno);
     }
 
     scenecut
@@ -234,7 +244,7 @@ impl<T: Pixel> SceneChangeDetector<T> {
     let mut result = if self.speed_mode == SceneDetectionSpeed::Fast {
       self.fast_scenecut(frame1, frame2)
     } else {
-      self.cost_scenecut(frame1, frame2)
+      self.cost_scenecut(frame1, frame2, input_frameno)
     };
 
     // Subtract the highest metric value of surrounding frames from the current one
@@ -281,7 +291,9 @@ impl<T: Pixel> SceneChangeDetector<T> {
   /// Compares current scene score to adapted threshold based on previous scores
   /// Value of current frame is offset by lookahead, if lookahead >=5
   /// Returns true if current scene score is higher than adapted threshold
-  fn adaptive_scenecut(&mut self) -> (bool, ScenecutResult) {
+  fn adaptive_scenecut(
+    &mut self, input_frameno: u64,
+  ) -> (bool, ScenecutResult) {
     let score = self.score_deque[self.deque_offset];
 
     // We use the importance block algorithm's cost metrics as a secondary algorithm
@@ -338,6 +350,7 @@ impl<T: Pixel> SceneChangeDetector<T> {
       }
 
       if back_over_tr_count != 0 || forward_over_tr_count != 0 {
+        self.flashes.insert(input_frameno);
         return (false, score);
       }
     }
@@ -428,7 +441,8 @@ impl<T: Pixel> SceneChangeDetector<T> {
   /// and use all three metrics.
   #[hawktracer(cost_scenecut)]
   fn cost_scenecut(
-    &self, frame1: Arc<Frame<T>>, frame2: Arc<Frame<T>>,
+    &mut self, frame1: Arc<Frame<T>>, frame2: Arc<Frame<T>>,
+    input_frameno: u64,
   ) -> ScenecutResult {
     let frame2_inter_ref = Arc::clone(&frame2);
     let frame1_imp_ref = Arc::clone(&frame1);
@@ -439,27 +453,20 @@ impl<T: Pixel> SceneChangeDetector<T> {
     let mut imp_block_cost = 0.0;
     crate::rayon::scope(|s| {
       s.spawn(|_| {
-        let intra_costs = estimate_intra_costs(
+        let intra_costs = estimate_frame_intra_cost(
           &*frame2,
           self.bit_depth,
           self.cpu_feature_level,
         );
-        intra_cost = intra_costs.iter().map(|&cost| cost as u64).sum::<u64>()
-          as f64
-          / intra_costs.len() as f64
       });
       s.spawn(|_| {
-        let inter_costs = estimate_inter_costs(
+        mv_inter_cost = estimate_frame_inter_cost(
           frame2_inter_ref,
           frame1,
           self.bit_depth,
           self.encoder_config,
           self.sequence.clone(),
         );
-
-        mv_inter_cost =
-          inter_costs.iter().map(|&cost| cost as u64).sum::<u64>() as f64
-            / inter_costs.len() as f64
       });
       s.spawn(|_| {
         let inter_costs =
