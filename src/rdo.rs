@@ -42,6 +42,7 @@ use crate::write_tx_tree;
 use crate::Tune;
 use crate::{encode_block_post_cdef, encode_block_pre_cdef};
 
+use crate::api::lookahead::LookaheadData;
 use crate::partition::PartitionType::*;
 use arrayvec::*;
 use itertools::izip;
@@ -249,8 +250,9 @@ pub fn clip_visible_bsize(
 
 // Compute the pixel-domain distortion for an encode
 fn compute_distortion<T: Pixel>(
-  fi: &FrameInvariants<T>, ts: &TileStateMut<'_, T>, bsize: BlockSize,
-  is_chroma_block: bool, tile_bo: TileBlockOffset, luma_only: bool,
+  fi: &FrameInvariants<T>, ts: &TileStateMut<'_, T>,
+  lookahead_data: &LookaheadData<T>, bsize: BlockSize, is_chroma_block: bool,
+  tile_bo: TileBlockOffset, luma_only: bool,
 ) -> ScaledDistortion {
   let area = Area::BlockStartingAt { bo: tile_bo.0 };
   let input_region = ts.input_tile.planes[0].subregion(area);
@@ -280,11 +282,12 @@ fn compute_distortion<T: Pixel>(
       |bias_area, bsize| {
         distortion_scale(
           fi,
+          lookahead_data,
           input_region.subregion(bias_area).frame_block_offset(),
           bsize,
         )
       },
-      fi.cpu_feature_level,
+      fi.config.cpu_feature_level,
     ),
     Tune::Psnr => sse_wxh(
       &input_region,
@@ -294,12 +297,13 @@ fn compute_distortion<T: Pixel>(
       |bias_area, bsize| {
         distortion_scale(
           fi,
+          lookahead_data,
           input_region.subregion(bias_area).frame_block_offset(),
           bsize,
         )
       },
       fi.sequence.bit_depth,
-      fi.cpu_feature_level,
+      fi.config.cpu_feature_level,
     ),
   } * fi.dist_scale[0];
 
@@ -330,12 +334,13 @@ fn compute_distortion<T: Pixel>(
         |bias_area, bsize| {
           distortion_scale(
             fi,
+            lookahead_data,
             input_region.subregion(bias_area).frame_block_offset(),
             bsize,
           )
         },
         fi.sequence.bit_depth,
-        fi.cpu_feature_level,
+        fi.config.cpu_feature_level,
       ) * fi.dist_scale[p];
     }
   }
@@ -344,9 +349,10 @@ fn compute_distortion<T: Pixel>(
 
 // Compute the transform-domain distortion for an encode
 fn compute_tx_distortion<T: Pixel>(
-  fi: &FrameInvariants<T>, ts: &TileStateMut<'_, T>, bsize: BlockSize,
-  is_chroma_block: bool, tile_bo: TileBlockOffset, tx_dist: ScaledDistortion,
-  skip: bool, luma_only: bool,
+  fi: &FrameInvariants<T>, ts: &TileStateMut<'_, T>,
+  lookahead_data: &LookaheadData<T>, bsize: BlockSize, is_chroma_block: bool,
+  tile_bo: TileBlockOffset, tx_dist: ScaledDistortion, skip: bool,
+  luma_only: bool,
 ) -> ScaledDistortion {
   assert!(fi.config.tune == Tune::Psnr);
   let area = Area::BlockStartingAt { bo: tile_bo.0 };
@@ -379,12 +385,13 @@ fn compute_tx_distortion<T: Pixel>(
       |bias_area, bsize| {
         distortion_scale(
           fi,
+          lookahead_data,
           input_region.subregion(bias_area).frame_block_offset(),
           bsize,
         )
       },
       fi.sequence.bit_depth,
-      fi.cpu_feature_level,
+      fi.config.cpu_feature_level,
     ) * fi.dist_scale[0]
   } else {
     tx_dist
@@ -418,12 +425,13 @@ fn compute_tx_distortion<T: Pixel>(
         |bias_area, bsize| {
           distortion_scale(
             fi,
+            lookahead_data,
             input_region.subregion(bias_area).frame_block_offset(),
             bsize,
           )
         },
         fi.sequence.bit_depth,
-        fi.cpu_feature_level,
+        fi.config.cpu_feature_level,
       ) * fi.dist_scale[p];
     }
   }
@@ -433,7 +441,8 @@ fn compute_tx_distortion<T: Pixel>(
 /// Compute a scaling factor to multiply the distortion of a block by,
 /// this factor is determined using temporal RDO.
 pub fn distortion_scale<T: Pixel>(
-  fi: &FrameInvariants<T>, frame_bo: PlaneBlockOffset, bsize: BlockSize,
+  fi: &FrameInvariants<T>, lookahead_data: &LookaheadData<T>,
+  frame_bo: PlaneBlockOffset, bsize: BlockSize,
 ) -> DistortionScale {
   if !fi.config.temporal_rdo() {
     return DistortionScale::default();
@@ -446,11 +455,12 @@ pub fn distortion_scale<T: Pixel>(
   let x = frame_bo.0.x >> IMPORTANCE_BLOCK_TO_BLOCK_SHIFT;
   let y = frame_bo.0.y >> IMPORTANCE_BLOCK_TO_BLOCK_SHIFT;
 
-  fi.distortion_scales[y * fi.w_in_imp_b + x]
+  lookahead_data.distortion_scales[y * fi.w_in_imp_b + x]
 }
 
 pub fn spatiotemporal_scale<T: Pixel>(
-  fi: &FrameInvariants<T>, frame_bo: PlaneBlockOffset, bsize: BlockSize,
+  fi: &FrameInvariants<T>, lookahead_data: &LookaheadData<T>,
+  frame_bo: PlaneBlockOffset, bsize: BlockSize,
 ) -> DistortionScale {
   if !fi.config.temporal_rdo() && fi.config.tune != Tune::Psychovisual {
     return DistortionScale::default();
@@ -476,7 +486,7 @@ pub fn spatiotemporal_scale<T: Pixel>(
   let mut sum = 0;
   for y in y0..y1 {
     sum += take_slice(
-      &fi.distortion_scales[y * fi.w_in_imp_b..][x0..x1],
+      &lookahead_data.distortion_scales[y * fi.w_in_imp_b..][x0..x1],
       MAX_SB_IN_IMP_B,
     )
     .iter()
@@ -660,9 +670,9 @@ pub fn compute_rd_cost<T: Pixel>(
 
 pub fn rdo_tx_size_type<T: Pixel>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
-  cw: &mut ContextWriter, bsize: BlockSize, tile_bo: TileBlockOffset,
-  luma_mode: PredictionMode, ref_frames: [RefType; 2], mvs: [MotionVector; 2],
-  skip: bool,
+  lookahead_data: &LookaheadData<T>, cw: &mut ContextWriter, bsize: BlockSize,
+  tile_bo: TileBlockOffset, luma_mode: PredictionMode,
+  ref_frames: [RefType; 2], mvs: [MotionVector; 2], skip: bool,
 ) -> (TxSize, TxType) {
   let is_inter = !luma_mode.is_intra();
   let mut tx_size = max_txsize_rect_lookup[bsize as usize];
@@ -700,6 +710,7 @@ pub fn rdo_tx_size_type<T: Pixel>(
     let (tx_type, rd_cost) = rdo_tx_type_decision(
       fi,
       ts,
+      lookahead_data,
       cw,
       &mut cw_checkpoint,
       luma_mode,
@@ -749,7 +760,8 @@ fn dmv_in_range(mv: MotionVector, ref_mv: MotionVector) -> bool {
 
 #[inline]
 fn luma_chroma_mode_rdo<T: Pixel>(
-  luma_mode: PredictionMode, fi: &FrameInvariants<T>, bsize: BlockSize,
+  luma_mode: PredictionMode, fi: &FrameInvariants<T>,
+  lookahead_data: &LookaheadData<T>, bsize: BlockSize,
   tile_bo: TileBlockOffset, ts: &mut TileStateMut<'_, T>,
   cw: &mut ContextWriter, rdo_type: RDOType,
   cw_checkpoint: &ContextWriterCheckpoint, best: &mut PartitionParameters,
@@ -792,11 +804,20 @@ fn luma_chroma_mode_rdo<T: Pixel>(
 
     let mut zero_distortion = false;
 
-    for sidx in select_segment(fi, ts, tile_bo, bsize, skip) {
+    for sidx in select_segment(fi, lookahead_data, ts, tile_bo, bsize, skip) {
       cw.bc.blocks.set_segmentation_idx(tile_bo, bsize, sidx);
 
       let (tx_size, tx_type) = rdo_tx_size_type(
-        fi, ts, cw, bsize, tile_bo, luma_mode, ref_frames, mvs, skip,
+        fi,
+        ts,
+        lookahead_data,
+        cw,
+        bsize,
+        tile_bo,
+        luma_mode,
+        ref_frames,
+        mvs,
+        skip,
       );
       for &chroma_mode in mode_set_chroma.iter() {
         let wr = &mut WriterCounter::new();
@@ -819,6 +840,7 @@ fn luma_chroma_mode_rdo<T: Pixel>(
         let (has_coeff, tx_dist) = encode_block_post_cdef(
           fi,
           ts,
+          lookahead_data,
           cw,
           wr,
           luma_mode,
@@ -844,6 +866,7 @@ fn luma_chroma_mode_rdo<T: Pixel>(
           compute_tx_distortion(
             fi,
             ts,
+            lookahead_data,
             bsize,
             is_chroma_block,
             tile_bo,
@@ -852,7 +875,15 @@ fn luma_chroma_mode_rdo<T: Pixel>(
             false,
           )
         } else {
-          compute_distortion(fi, ts, bsize, is_chroma_block, tile_bo, false)
+          compute_distortion(
+            fi,
+            ts,
+            lookahead_data,
+            bsize,
+            is_chroma_block,
+            tile_bo,
+            false,
+          )
         };
         let is_zero_dist = distortion.0 == 0;
         let rd = compute_rd_cost(fi, rate, distortion);
@@ -891,8 +922,8 @@ fn luma_chroma_mode_rdo<T: Pixel>(
 // RDO-based mode decision
 pub fn rdo_mode_decision<T: Pixel>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
-  cw: &mut ContextWriter, bsize: BlockSize, tile_bo: TileBlockOffset,
-  inter_cfg: &InterConfig,
+  lookahead_data: &LookaheadData<T>, cw: &mut ContextWriter, bsize: BlockSize,
+  tile_bo: TileBlockOffset, inter_cfg: &InterConfig,
 ) -> PartitionParameters {
   let PlaneConfig { xdec, ydec, .. } = ts.input.planes[1].cfg;
   let cw_checkpoint = cw.checkpoint(&tile_bo, fi.sequence.chroma_sampling);
@@ -911,6 +942,7 @@ pub fn rdo_mode_decision<T: Pixel>(
     inter_frame_rdo_mode_decision(
       fi,
       ts,
+      lookahead_data,
       cw,
       bsize,
       tile_bo,
@@ -929,6 +961,7 @@ pub fn rdo_mode_decision<T: Pixel>(
     best = intra_frame_rdo_mode_decision(
       fi,
       ts,
+      lookahead_data,
       cw,
       bsize,
       tile_bo,
@@ -950,6 +983,7 @@ pub fn rdo_mode_decision<T: Pixel>(
     write_tx_blocks(
       fi,
       ts,
+      lookahead_data,
       cw,
       &mut wr,
       best.pred_mode_luma,
@@ -983,6 +1017,7 @@ pub fn rdo_mode_decision<T: Pixel>(
         let (has_coeff, _) = encode_block_post_cdef(
           fi,
           ts,
+          lookahead_data,
           cw,
           &mut wr,
           best.pred_mode_luma,
@@ -1006,8 +1041,15 @@ pub fn rdo_mode_decision<T: Pixel>(
         let rate = wr.tell_frac() - tell;
 
         // For CFL, tx-domain distortion is not an option.
-        let distortion =
-          compute_distortion(fi, ts, bsize, is_chroma_block, tile_bo, false);
+        let distortion = compute_distortion(
+          fi,
+          ts,
+          lookahead_data,
+          bsize,
+          is_chroma_block,
+          tile_bo,
+          false,
+        );
         let rd = compute_rd_cost(fi, rate, distortion);
         if rd < best.rd_cost {
           best.rd_cost = rd;
@@ -1048,9 +1090,9 @@ pub fn rdo_mode_decision<T: Pixel>(
 
 fn inter_frame_rdo_mode_decision<T: Pixel>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
-  cw: &mut ContextWriter, bsize: BlockSize, tile_bo: TileBlockOffset,
-  inter_cfg: &InterConfig, cw_checkpoint: &ContextWriterCheckpoint,
-  rdo_type: RDOType,
+  lookahead_data: &LookaheadData<T>, cw: &mut ContextWriter, bsize: BlockSize,
+  tile_bo: TileBlockOffset, inter_cfg: &InterConfig,
+  cw_checkpoint: &ContextWriterCheckpoint, rdo_type: RDOType,
 ) -> PartitionParameters {
   let mut best = PartitionParameters::default();
 
@@ -1271,7 +1313,7 @@ fn inter_frame_rdo_mode_decision<T: Pixel>(
         bsize.width(),
         bsize.height(),
         fi.sequence.bit_depth,
-        fi.cpu_feature_level,
+        fi.config.cpu_feature_level,
       );
       satds.push(satd);
     } else {
@@ -1292,6 +1334,7 @@ fn inter_frame_rdo_mode_decision<T: Pixel>(
       luma_chroma_mode_rdo(
         luma_mode,
         fi,
+        lookahead_data,
         bsize,
         tile_bo,
         ts,
@@ -1315,9 +1358,9 @@ fn inter_frame_rdo_mode_decision<T: Pixel>(
 
 fn intra_frame_rdo_mode_decision<T: Pixel>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
-  cw: &mut ContextWriter, bsize: BlockSize, tile_bo: TileBlockOffset,
-  cw_checkpoint: &ContextWriterCheckpoint, rdo_type: RDOType,
-  mut best: PartitionParameters, is_chroma_block: bool,
+  lookahead_data: &LookaheadData<T>, cw: &mut ContextWriter, bsize: BlockSize,
+  tile_bo: TileBlockOffset, cw_checkpoint: &ContextWriterCheckpoint,
+  rdo_type: RDOType, mut best: PartitionParameters, is_chroma_block: bool,
 ) -> PartitionParameters {
   let num_modes_rdo: usize;
   let mut modes = ArrayVec::<_, INTRA_MODES>::new();
@@ -1404,7 +1447,7 @@ fn intra_frame_rdo_mode_decision<T: Pixel>(
           IntraParam::None,
           if luma_mode.is_directional() { ief_params } else { None },
           &edge_buf,
-          fi.cpu_feature_level,
+          fi.config.cpu_feature_level,
         );
 
         let plane_org = ts.input_tile.planes[0]
@@ -1417,7 +1460,7 @@ fn intra_frame_rdo_mode_decision<T: Pixel>(
           tx_size.width(),
           tx_size.height(),
           fi.sequence.bit_depth,
-          fi.cpu_feature_level,
+          fi.config.cpu_feature_level,
         );
       }
       satds_all
@@ -1439,6 +1482,7 @@ fn intra_frame_rdo_mode_decision<T: Pixel>(
     luma_chroma_mode_rdo(
       luma_mode,
       fi,
+      lookahead_data,
       bsize,
       tile_bo,
       ts,
@@ -1473,6 +1517,7 @@ fn intra_frame_rdo_mode_decision<T: Pixel>(
         luma_chroma_mode_rdo(
           best.pred_mode_luma,
           fi,
+          lookahead_data,
           bsize,
           tile_bo,
           ts,
@@ -1563,7 +1608,7 @@ pub fn rdo_cfl_alpha<T: Pixel>(
           IntraParam::Alpha(alpha),
           None,
           &edge_buf,
-          fi.cpu_feature_level,
+          fi.config.cpu_feature_level,
         );
         sse_wxh(
           &input.subregion(Area::BlockStartingAt { bo: tile_bo.0 }),
@@ -1572,7 +1617,7 @@ pub fn rdo_cfl_alpha<T: Pixel>(
           visible_tx_h,
           |_, _| DistortionScale::default(), // We're not doing RDO here.
           fi.sequence.bit_depth,
-          fi.cpu_feature_level,
+          fi.config.cpu_feature_level,
         )
         .0
       };
@@ -1608,9 +1653,10 @@ pub fn rdo_cfl_alpha<T: Pixel>(
 /// state is created and stored for later use.
 pub fn rdo_tx_type_decision<T: Pixel>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
-  cw: &mut ContextWriter, cw_checkpoint: &mut Option<ContextWriterCheckpoint>,
-  mode: PredictionMode, ref_frames: [RefType; 2], mvs: [MotionVector; 2],
-  bsize: BlockSize, tile_bo: TileBlockOffset, tx_size: TxSize, tx_set: TxSet,
+  lookahead_data: &LookaheadData<T>, cw: &mut ContextWriter,
+  cw_checkpoint: &mut Option<ContextWriterCheckpoint>, mode: PredictionMode,
+  ref_frames: [RefType; 2], mvs: [MotionVector; 2], bsize: BlockSize,
+  tile_bo: TileBlockOffset, tx_size: TxSize, tx_set: TxSet,
   tx_types: &[TxType], cur_best_rd: f64,
 ) -> (TxType, f64) {
   let mut best_type = TxType::DCT_DCT;
@@ -1655,6 +1701,7 @@ pub fn rdo_tx_type_decision<T: Pixel>(
       write_tx_tree(
         fi,
         ts,
+        lookahead_data,
         cw,
         &mut wr,
         mode,
@@ -1672,6 +1719,7 @@ pub fn rdo_tx_type_decision<T: Pixel>(
       write_tx_blocks(
         fi,
         ts,
+        lookahead_data,
         cw,
         &mut wr,
         mode,
@@ -1694,6 +1742,7 @@ pub fn rdo_tx_type_decision<T: Pixel>(
       compute_tx_distortion(
         fi,
         ts,
+        lookahead_data,
         bsize,
         is_chroma_block,
         tile_bo,
@@ -1702,7 +1751,15 @@ pub fn rdo_tx_type_decision<T: Pixel>(
         true,
       )
     } else {
-      compute_distortion(fi, ts, bsize, is_chroma_block, tile_bo, true)
+      compute_distortion(
+        fi,
+        ts,
+        lookahead_data,
+        bsize,
+        is_chroma_block,
+        tile_bo,
+        true,
+      )
     };
     cw.rollback(cw_checkpoint.as_ref().unwrap());
 
@@ -1756,12 +1813,14 @@ pub fn get_sub_partitions(
 #[inline(always)]
 fn rdo_partition_none<T: Pixel>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
-  cw: &mut ContextWriter, bsize: BlockSize, tile_bo: TileBlockOffset,
-  inter_cfg: &InterConfig, child_modes: &mut ArrayVec<PartitionParameters, 4>,
+  lookahead_data: &LookaheadData<T>, cw: &mut ContextWriter, bsize: BlockSize,
+  tile_bo: TileBlockOffset, inter_cfg: &InterConfig,
+  child_modes: &mut ArrayVec<PartitionParameters, 4>,
 ) -> f64 {
   debug_assert!(tile_bo.0.x < ts.mi_width && tile_bo.0.y < ts.mi_height);
 
-  let mode = rdo_mode_decision(fi, ts, cw, bsize, tile_bo, inter_cfg);
+  let mode =
+    rdo_mode_decision(fi, ts, lookahead_data, cw, bsize, tile_bo, inter_cfg);
   let cost = mode.rd_cost;
 
   child_modes.push(mode);
@@ -1773,9 +1832,10 @@ fn rdo_partition_none<T: Pixel>(
 #[inline(always)]
 fn rdo_partition_simple<T: Pixel, W: Writer>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
-  cw: &mut ContextWriter, w_pre_cdef: &mut W, w_post_cdef: &mut W,
-  bsize: BlockSize, tile_bo: TileBlockOffset, inter_cfg: &InterConfig,
-  partition: PartitionType, rdo_type: RDOType, best_rd: f64,
+  lookahead_data: &LookaheadData<T>, cw: &mut ContextWriter,
+  w_pre_cdef: &mut W, w_post_cdef: &mut W, bsize: BlockSize,
+  tile_bo: TileBlockOffset, inter_cfg: &InterConfig, partition: PartitionType,
+  rdo_type: RDOType, best_rd: f64,
   child_modes: &mut ArrayVec<PartitionParameters, 4>,
 ) -> Option<f64> {
   debug_assert!(tile_bo.0.x < ts.mi_width && tile_bo.0.y < ts.mi_height);
@@ -1818,8 +1878,15 @@ fn rdo_partition_simple<T: Pixel, W: Writer>(
     let has_rows = offset.0.y + hbs < ts.mi_height;
 
     if has_cols && has_rows {
-      let mode_decision =
-        rdo_mode_decision(fi, ts, cw, subsize, offset, inter_cfg);
+      let mode_decision = rdo_mode_decision(
+        fi,
+        ts,
+        lookahead_data,
+        cw,
+        subsize,
+        offset,
+        inter_cfg,
+      );
 
       rd_cost_sum += mode_decision.rd_cost;
 
@@ -1834,6 +1901,7 @@ fn rdo_partition_simple<T: Pixel, W: Writer>(
       encode_block_with_modes(
         fi,
         ts,
+        lookahead_data,
         cw,
         w_pre_cdef,
         w_post_cdef,
@@ -1856,10 +1924,11 @@ fn rdo_partition_simple<T: Pixel, W: Writer>(
 // RDO-based single level partitioning decision
 pub fn rdo_partition_decision<T: Pixel, W: Writer>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
-  cw: &mut ContextWriter, w_pre_cdef: &mut W, w_post_cdef: &mut W,
-  bsize: BlockSize, tile_bo: TileBlockOffset,
-  cached_block: &PartitionGroupParameters, partition_types: &[PartitionType],
-  rdo_type: RDOType, inter_cfg: &InterConfig,
+  lookahead_data: &LookaheadData<T>, cw: &mut ContextWriter,
+  w_pre_cdef: &mut W, w_post_cdef: &mut W, bsize: BlockSize,
+  tile_bo: TileBlockOffset, cached_block: &PartitionGroupParameters,
+  partition_types: &[PartitionType], rdo_type: RDOType,
+  inter_cfg: &InterConfig,
 ) -> PartitionGroupParameters {
   let mut best_partition = cached_block.part_type;
   let mut best_rd = cached_block.rd_cost;
@@ -1882,6 +1951,7 @@ pub fn rdo_partition_decision<T: Pixel, W: Writer>(
         Some(rdo_partition_none(
           fi,
           ts,
+          lookahead_data,
           cw,
           bsize,
           tile_bo,
@@ -1893,6 +1963,7 @@ pub fn rdo_partition_decision<T: Pixel, W: Writer>(
         rdo_partition_simple(
           fi,
           ts,
+          lookahead_data,
           cw,
           w_pre_cdef,
           w_post_cdef,
@@ -1934,7 +2005,8 @@ pub fn rdo_partition_decision<T: Pixel, W: Writer>(
 fn rdo_loop_plane_error<T: Pixel>(
   base_sbo: TileSuperBlockOffset, offset_sbo: TileSuperBlockOffset,
   sb_w: usize, sb_h: usize, fi: &FrameInvariants<T>, ts: &TileStateMut<'_, T>,
-  blocks: &TileBlocks<'_>, test: &Frame<T>, src: &Tile<'_, T>, pli: usize,
+  lookahead_data: &LookaheadData<T>, blocks: &TileBlocks<'_>, test: &Frame<T>,
+  src: &Tile<'_, T>, pli: usize,
 ) -> ScaledDistortion {
   let sb_w_blocks =
     if fi.sequence.use_128x128_superblock { 16 } else { 8 } * sb_w;
@@ -1960,6 +2032,7 @@ fn rdo_loop_plane_error<T: Pixel>(
         let frame_bo = (base_sbo + offset_sbo).block_offset(bx << 1, by << 1);
         let bias = distortion_scale(
           fi,
+          lookahead_data,
           ts.to_frame_block_offset(frame_bo),
           BlockSize::BLOCK_8X8,
         );
@@ -1979,7 +2052,7 @@ fn rdo_loop_plane_error<T: Pixel>(
             8,
             8,
             fi.sequence.bit_depth,
-            fi.cpu_feature_level,
+            fi.config.cpu_feature_level,
           ) as u64)
             * bias
         } else {
@@ -1990,7 +2063,7 @@ fn rdo_loop_plane_error<T: Pixel>(
             8 >> ydec,
             |_, _| bias,
             fi.sequence.bit_depth,
-            fi.cpu_feature_level,
+            fi.config.cpu_feature_level,
           )
         };
       }
@@ -2005,8 +2078,8 @@ fn rdo_loop_plane_error<T: Pixel>(
 // superblocks and full, smaller LRUs in the other planes
 pub fn rdo_loop_decision<T: Pixel, W: Writer>(
   base_sbo: TileSuperBlockOffset, fi: &FrameInvariants<T>,
-  ts: &mut TileStateMut<'_, T>, cw: &mut ContextWriter, w: &mut W,
-  deblock_p: bool,
+  ts: &mut TileStateMut<'_, T>, lookahead_data: &LookaheadData<T>,
+  cw: &mut ContextWriter, w: &mut W, deblock_p: bool,
 ) {
   let planes = if fi.sequence.chroma_sampling == ChromaSampling::Cs400 {
     1
@@ -2340,6 +2413,7 @@ pub fn rdo_loop_decision<T: Pixel, W: Writer>(
                       1,
                       fi,
                       ts,
+                      lookahead_data,
                       &tileblocks_subset.as_const(),
                       cdef_ref,
                       &src_subset,
@@ -2395,6 +2469,7 @@ pub fn rdo_loop_decision<T: Pixel, W: Writer>(
                       1,
                       fi,
                       ts,
+                      lookahead_data,
                       &tileblocks_subset.as_const(),
                       lrf_ref,
                       &src_subset,
@@ -2418,6 +2493,7 @@ pub fn rdo_loop_decision<T: Pixel, W: Writer>(
                   1,
                   fi,
                   ts,
+                  lookahead_data,
                   &tileblocks_subset.as_const(),
                   cdef_ref,
                   &src_subset,
@@ -2527,6 +2603,7 @@ pub fn rdo_loop_decision<T: Pixel, W: Writer>(
                   lru_sb_h,
                   fi,
                   ts,
+                  lookahead_data,
                   &tileblocks_subset.as_const(),
                   lrf_input,
                   &src_subset,
@@ -2610,6 +2687,7 @@ pub fn rdo_loop_decision<T: Pixel, W: Writer>(
                   lru_sb_h,
                   fi,
                   ts,
+                  lookahead_data,
                   &tileblocks_subset.as_const(),
                   lrf_ref,
                   &src_subset,

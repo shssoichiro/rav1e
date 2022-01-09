@@ -227,7 +227,7 @@ impl Config {
     let mut inner = ContextInner::new(&config);
 
     if self.rate_control.emit_pass_data {
-      let params = inner.rc_state.get_twopass_out_params(&inner, 0);
+      let params = inner.rc_state.get_twopass_out_params(&inner);
       inner.rc_state.init_first_pass(params.pass1_log_base_q);
     }
 

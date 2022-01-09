@@ -11,6 +11,7 @@ use itertools::*;
 
 use crate::api::color::*;
 use crate::api::{Rational, SpeedSettings};
+use crate::cpu_features::CpuFeatureLevel;
 use crate::encoder::Tune;
 use crate::serialize::{Deserialize, Serialize};
 
@@ -105,6 +106,9 @@ pub struct EncoderConfig {
 
   /// Settings which affect the encoding speed vs. quality trade-off.
   pub speed_settings: SpeedSettings,
+
+  /// Target CPU feature level.
+  pub cpu_feature_level: CpuFeatureLevel,
 }
 
 /// Default preset for EncoderConfig: it is a balance between quality and
@@ -159,6 +163,7 @@ impl EncoderConfig {
       tile_rows: 0,
       tiles: 0,
       speed_settings: SpeedSettings::from_preset(speed),
+      cpu_feature_level: Default::default(),
     }
   }
 
@@ -214,6 +219,12 @@ impl EncoderConfig {
     // distortion is used, distortion is only known at the tx block level which
     // might be bigger than 8x8. So temporal RDO is always disabled in that case.
     !self.speed_settings.transform.tx_domain_distortion
+  }
+
+  /// Should we enable multiple reference frames?
+  #[inline]
+  pub const fn multiref(&self) -> bool {
+    !self.low_latency || self.speed_settings.multiref
   }
 }
 

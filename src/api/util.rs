@@ -17,7 +17,9 @@ use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
 
+use crate::IMPORTANCE_BLOCK_SHIFT;
 use thiserror::*;
+use v_frame::math::Fixed;
 
 /// Opaque type to be passed from Frame to Packet
 #[derive(Debug)]
@@ -282,4 +284,16 @@ impl<T: Pixel> IntoFrame<T> for (Frame<T>, Option<FrameParameters>) {
   fn into(self) -> (Option<Arc<Frame<T>>>, Option<FrameParameters>) {
     (Some(Arc::new(self.0)), self.1)
   }
+}
+
+pub(crate) fn size_in_b(width: usize, height: usize) -> (usize, usize) {
+  let w_in_b = 2 * width.align_power_of_two_and_shift(3); // MiCols, ((width+7)/8)<<3 >> MI_SIZE_LOG2
+  let h_in_b = 2 * height.align_power_of_two_and_shift(3); // MiRows, ((height+7)/8)<<3 >> MI_SIZE_LOG2
+  (w_in_b, h_in_b)
+}
+
+pub(crate) fn size_in_imp_b(width: usize, height: usize) -> (usize, usize) {
+  let w_in_imp_b = width.align_power_of_two_and_shift(IMPORTANCE_BLOCK_SHIFT);
+  let h_in_imp_b = height.align_power_of_two_and_shift(IMPORTANCE_BLOCK_SHIFT);
+  (w_in_imp_b, h_in_imp_b)
 }

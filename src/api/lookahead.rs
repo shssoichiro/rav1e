@@ -10,15 +10,19 @@ use crate::frame::{AsRegion, PlaneOffset};
 use crate::me::{estimate_tile_motion, FrameMEStats};
 use crate::partition::{get_intra_edges, BlockSize, REF_FRAMES};
 use crate::predict::{IntraParam, PredictionMode};
+use crate::rate::{QuantizerParameters, RCState};
 use crate::rayon::iter::*;
+use crate::rdo::DistortionScale;
 use crate::tiling::{Area, PlaneRegion, TileRect};
 use crate::transform::TxSize;
-use crate::Pixel;
+use crate::{ReferenceFrame, ReferenceFramesSet};
 use rust_hawktracer::*;
 use std::sync::Arc;
 use v_frame::frame::Frame;
-use v_frame::pixel::CastFromPrimitive;
+use v_frame::pixel::{CastFromPrimitive, Pixel};
 use v_frame::plane::Plane;
+
+use super::size_in_imp_b;
 
 pub(crate) const IMP_BLOCK_MV_UNITS_PER_PIXEL: i64 = 8;
 pub(crate) const IMP_BLOCK_SIZE_IN_MV_UNITS: i64 =
@@ -39,8 +43,8 @@ pub(crate) fn estimate_intra_costs<T: Pixel>(
   );
   let tx_size = bsize.tx_size();
 
-  let h_in_imp_b = plane.cfg.height / IMPORTANCE_BLOCK_SIZE;
-  let w_in_imp_b = plane.cfg.width / IMPORTANCE_BLOCK_SIZE;
+  let (w_in_imp_b, h_in_imp_b) =
+    size_in_imp_b(plane.cfg.width, plane.cfg.height);
   let mut intra_costs = Vec::with_capacity(h_in_imp_b * w_in_imp_b);
 
   for y in 0..h_in_imp_b {
@@ -125,8 +129,8 @@ pub(crate) fn estimate_importance_block_difference<T: Pixel>(
 ) -> f64 {
   let plane_org = &frame.planes[0];
   let plane_ref = &ref_frame.planes[0];
-  let h_in_imp_b = plane_org.cfg.height / IMPORTANCE_BLOCK_SIZE;
-  let w_in_imp_b = plane_org.cfg.width / IMPORTANCE_BLOCK_SIZE;
+  let (w_in_imp_b, h_in_imp_b) =
+    size_in_imp_b(plane_org.cfg.width, plane_org.cfg.height);
 
   let mut imp_block_costs = 0;
 
@@ -178,38 +182,24 @@ pub(crate) fn estimate_importance_block_difference<T: Pixel>(
 #[hawktracer(estimate_inter_costs)]
 pub(crate) fn estimate_inter_costs<T: Pixel>(
   frame: Arc<Frame<T>>, ref_frame: Arc<Frame<T>>, bit_depth: usize,
-  mut config: EncoderConfig, sequence: Arc<Sequence>,
+  config: EncoderConfig, sequence: Arc<Sequence>,
   buffer: Arc<[FrameMEStats; REF_FRAMES]>,
 ) -> f64 {
-  config.low_latency = true;
-  config.speed_settings.multiref = false;
-  let inter_cfg = InterConfig::new(&config);
-  let last_fi = FrameInvariants::new_key_frame(Arc::new(config), sequence, 0);
-  let mut fi =
-    FrameInvariants::new_inter_frame(&last_fi, &inter_cfg, 0, 1, 2, false);
-
-  // Compute the motion vectors.
-  let mut fs = FrameState::new_with_frame_and_me_stats_and_rec(
-    &fi,
+  let (w_in_imp_b, h_in_imp_b) = size_in_imp_b(config.width, config.height);
+  let mut lookahead_data = LookaheadData::new(w_in_imp_b, h_in_imp_b);
+  compute_lookahead_motion_vectors(
     Arc::clone(&frame),
+    &mut lookahead_data,
     buffer,
-    // We do not use this field, so we can avoid the expensive allocation
-    Arc::new(Frame {
-      planes: [
-        Plane::new(0, 0, 0, 0, 0, 0),
-        Plane::new(0, 0, 0, 0, 0, 0),
-        Plane::new(0, 0, 0, 0, 0, 0),
-      ],
-    }),
+    config,
+    sequence,
+    false,
   );
-  compute_motion_vectors(&mut fi, &mut fs, &inter_cfg);
 
   // Estimate inter costs
   let plane_org = &frame.planes[0];
   let plane_ref = &ref_frame.planes[0];
-  let h_in_imp_b = plane_org.cfg.height / IMPORTANCE_BLOCK_SIZE;
-  let w_in_imp_b = plane_org.cfg.width / IMPORTANCE_BLOCK_SIZE;
-  let stats = &fs.frame_me_stats[0];
+  let stats = &lookahead_data.lookahead_me_stats.unwrap()[0];
   let bsize = BlockSize::from_width_and_height(
     IMPORTANCE_BLOCK_SIZE,
     IMPORTANCE_BLOCK_SIZE,
@@ -245,15 +235,115 @@ pub(crate) fn estimate_inter_costs<T: Pixel>(
         bsize.width(),
         bsize.height(),
         bit_depth,
-        fi.cpu_feature_level,
+        config.cpu_feature_level,
       ) as u64;
     });
   });
   inter_costs as f64 / (w_in_imp_b * h_in_imp_b) as f64
 }
 
+/// Computes simple lookahead motion vectors using one ref frame and returns a temporary
+/// FrameInvariants and FrameState with relevant data filled in.
+#[hawktracer(compute_lookahead_motion_vectors)]
+pub(crate) fn compute_lookahead_motion_vectors<T: Pixel>(
+  frame: Arc<Frame<T>>, lookahead_data: &mut LookaheadData<T>,
+  buffer: Arc<[FrameMEStats; REF_FRAMES]>, mut config: EncoderConfig,
+  sequence: Arc<Sequence>, propagate: bool,
+) {
+  config.low_latency = true;
+  config.speed_settings.multiref = false;
+  let inter_cfg = InterConfig::new(&config);
+  let last_fi =
+    FrameInvariants::new_key_frame(Arc::new(config), sequence, 0, 0);
+  let mut fi = FrameInvariants::new_inter_frame(
+    PyramidDecision {
+      input_frameno: 1,
+      output_frameno: 1,
+      index_in_group: 0,
+      level: 0,
+      show_frame: true,
+      show_existing_frame: false,
+      placeholder_frame: false,
+    },
+    &last_fi,
+    &inter_cfg,
+    false,
+    0,
+  );
+
+  if propagate {
+    let fti = fi.get_frame_subtype();
+    let (log_base_q, log_q) = RCState::calc_flat_quantizer(
+      config.quantizer as u8,
+      config.bit_depth,
+      fti,
+    );
+    let qps = QuantizerParameters::new_from_log_q(
+      log_base_q,
+      log_q,
+      config.bit_depth,
+      config.chroma_sampling,
+      false,
+    );
+
+    // Our lookahead_rec_buffer should be filled with correct original frame
+    // data from the previous frames. Copy it into rec_buffer because that's
+    // what the MV search uses.
+    fi.rec_buffer = lookahead_data.lookahead_rec_buffer.clone();
+
+    // Estimate lambda with rate-control dry-run
+    fi.set_quantizers(&qps);
+  }
+
+  // Compute the motion vectors.
+  let mut fs = FrameState::new_with_frame_and_me_stats_and_rec(
+    &fi,
+    Arc::clone(&frame),
+    buffer,
+    // We do not use this field, so we can avoid the expensive allocation
+    Arc::new(Frame {
+      planes: [
+        Plane::new(0, 0, 0, 0, 0, 0),
+        Plane::new(0, 0, 0, 0, 0, 0),
+        Plane::new(0, 0, 0, 0, 0, 0),
+      ],
+    }),
+  );
+  compute_motion_vectors(&mut fi, &mut fs, &inter_cfg);
+
+  // Save the motion vectors to LookaheadData.
+  lookahead_data.lookahead_me_stats = Some(fs.frame_me_stats.clone());
+
+  if propagate {
+    // Set lookahead_rec_buffer on this FrameInvariants for future
+    // FrameInvariants to pick it up.
+    let rfs = Arc::new(ReferenceFrame {
+      // TODO: Does this need changed?
+      order_hint: fi.order_hint,
+      width: fi.width as u32,
+      height: fi.height as u32,
+      render_width: fi.render_width,
+      render_height: fi.render_height,
+      // Use the original frame contents.
+      frame: fs.input.clone(),
+      input_hres: fs.input_hres.clone(),
+      input_qres: fs.input_qres.clone(),
+      cdfs: fs.cdfs,
+      frame_me_stats: fs.frame_me_stats.clone(),
+      output_frameno: 1,
+      segmentation: fs.segmentation,
+    });
+    for i in 0..(REF_FRAMES as usize) {
+      if (fi.refresh_frame_flags & (1 << i)) != 0 {
+        lookahead_data.lookahead_rec_buffer.frames[i] = Some(Arc::clone(&rfs));
+        lookahead_data.lookahead_rec_buffer.deblock[i] = fs.deblock;
+      }
+    }
+  }
+}
+
 #[hawktracer(compute_motion_vectors)]
-pub(crate) fn compute_motion_vectors<T: Pixel>(
+fn compute_motion_vectors<T: Pixel>(
   fi: &mut FrameInvariants<T>, fs: &mut FrameState<T>, inter_cfg: &InterConfig,
 ) {
   let mut blocks = FrameBlocks::new(fi.w_in_b, fi.h_in_b);
@@ -266,4 +356,59 @@ pub(crate) fn compute_motion_vectors<T: Pixel>(
       let ts = &mut ctx.ts;
       estimate_tile_motion(fi, ts, inter_cfg);
     });
+}
+
+#[derive(Debug, Clone)]
+pub struct LookaheadData<T: Pixel> {
+  /// Intra prediction cost estimations for each importance block.
+  pub lookahead_intra_costs: Box<[u32]>,
+  /// Future importance values for each importance block. That is, a value
+  /// indicating how much future frames depend on the block (for example, via
+  /// inter-prediction).
+  pub block_importances: Box<[f32]>,
+  /// Pre-computed distortion_scale.
+  pub distortion_scales: Box<[DistortionScale]>,
+  /// Motion vectors to the _original_ reference frames (not reconstructed).
+  /// Used for lookahead purposes.
+  ///
+  /// These objects are very expensive to create, so their creation
+  /// is deferred until it is needed.
+  pub lookahead_me_stats: Option<Arc<[FrameMEStats; REF_FRAMES as usize]>>,
+  /// The lookahead version of `rec_buffer`, used for storing and propagating
+  /// the original reference frames (rather than reconstructed ones). The
+  /// lookahead uses both `rec_buffer` and `lookahead_rec_buffer`, where
+  /// `rec_buffer` contains the current frame's reference frames and
+  /// `lookahead_rec_buffer` contains the next frame's reference frames.
+  pub lookahead_rec_buffer: ReferenceFramesSet<T>,
+}
+
+impl<T: Pixel> LookaheadData<T> {
+  pub fn new(w_in_imp_b: usize, h_in_imp_b: usize) -> Self {
+    Self {
+      lookahead_intra_costs: vec![0; h_in_imp_b * w_in_imp_b]
+        .into_boxed_slice(),
+      block_importances: vec![0.0; h_in_imp_b * w_in_imp_b].into_boxed_slice(),
+      distortion_scales: vec![
+        DistortionScale::new(0.0);
+        h_in_imp_b * w_in_imp_b
+      ]
+      .into_boxed_slice(),
+      lookahead_me_stats: None,
+      lookahead_rec_buffer: ReferenceFramesSet::new(),
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PyramidDecision {
+  pub input_frameno: u64,
+  pub output_frameno: u64,
+  pub index_in_group: u64,
+  pub level: u64,
+  pub show_frame: bool,
+  pub show_existing_frame: bool,
+  /// These were previously known as `invalid` frames.
+  /// Now these will no longer associate to a `FrameInvariants`,
+  /// in order to improve performance by reducing allocations of `FrameInvariants`.
+  pub placeholder_frame: bool,
 }

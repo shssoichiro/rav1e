@@ -8,8 +8,7 @@
 // PATENTS file, you can obtain it at www.aomedia.org/license/patent.
 
 use crate::api::lookahead::*;
-use crate::api::{EncoderConfig, SceneDetectionSpeed};
-use crate::cpu_features::CpuFeatureLevel;
+use crate::api::{size_in_b, EncoderConfig, SceneDetectionSpeed};
 use crate::encoder::Sequence;
 use crate::frame::*;
 use crate::me::FrameMEStats;
@@ -20,7 +19,6 @@ use rust_hawktracer::*;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::{cmp, u64};
-use v_frame::math::Fixed;
 
 // The fast implementation is based on a Python implementation at
 // https://pyscenedetect.readthedocs.io/en/latest/reference/detection-methods/.
@@ -58,7 +56,7 @@ pub struct SceneChangeDetector<T: Pixel> {
   /// when using a downscale factor of 1.
   frame_ref_buffer: Option<Box<[Arc<Frame<T>>; 2]>>,
   /// Deque offset for current
-  lookahead_offset: usize,
+  pub(crate) lookahead_offset: usize,
   /// Start deque offset based on lookahead
   deque_offset: usize,
   /// Scenechange results for adaptive threshold
@@ -67,8 +65,6 @@ pub struct SceneChangeDetector<T: Pixel> {
   pixels: usize,
   /// The bit depth of the video.
   bit_depth: usize,
-  /// The CPU feature level to be used.
-  cpu_feature_level: CpuFeatureLevel,
   encoder_config: EncoderConfig,
   sequence: Arc<Sequence>,
   /// Calculated intra costs for each input frame.
@@ -78,8 +74,8 @@ pub struct SceneChangeDetector<T: Pixel> {
 
 impl<T: Pixel> SceneChangeDetector<T> {
   pub fn new(
-    encoder_config: EncoderConfig, cpu_feature_level: CpuFeatureLevel,
-    lookahead_distance: usize, sequence: Arc<Sequence>,
+    encoder_config: EncoderConfig, lookahead_distance: usize,
+    sequence: Arc<Sequence>,
   ) -> Self {
     let bit_depth = encoder_config.bit_depth;
     let speed_mode = if encoder_config.low_latency {
@@ -119,7 +115,6 @@ impl<T: Pixel> SceneChangeDetector<T> {
       score_deque,
       pixels,
       bit_depth,
-      cpu_feature_level,
       encoder_config,
       sequence,
       intra_costs: BTreeMap::new(),
@@ -450,9 +445,8 @@ impl<T: Pixel> SceneChangeDetector<T> {
     let mut mv_inter_cost = 0.0;
     let mut imp_block_cost = 0.0;
 
-    let cols = 2 * self.encoder_config.width.align_power_of_two_and_shift(3);
-    let rows = 2 * self.encoder_config.height.align_power_of_two_and_shift(3);
-
+    let (cols, rows) =
+      size_in_b(self.encoder_config.width, self.encoder_config.height);
     let buffer = if let Some(buffer) = &self.frame_me_stats_buffer {
       Arc::clone(buffer)
     } else {
@@ -462,15 +456,15 @@ impl<T: Pixel> SceneChangeDetector<T> {
       clone
     };
 
+    let bit_depth = self.bit_depth;
+    let config = self.encoder_config;
+
     crate::rayon::scope(|s| {
+      let seq_ref = Arc::clone(&self.sequence);
       s.spawn(|_| {
         let intra_costs =
           self.intra_costs.entry(input_frameno).or_insert_with(|| {
-            estimate_intra_costs(
-              &*frame2,
-              self.bit_depth,
-              self.cpu_feature_level,
-            )
+            estimate_intra_costs(&*frame2, bit_depth, config.cpu_feature_level)
           });
         intra_cost = intra_costs.iter().map(|&cost| cost as u64).sum::<u64>()
           as f64
@@ -482,7 +476,7 @@ impl<T: Pixel> SceneChangeDetector<T> {
           frame1,
           self.bit_depth,
           self.encoder_config,
-          self.sequence.clone(),
+          seq_ref,
           buffer,
         );
       });
@@ -519,7 +513,7 @@ impl<T: Pixel> SceneChangeDetector<T> {
     for (l1, l2) in lines {
       let l1 = l1.get(..plane1.cfg.width).unwrap_or(l1);
       let l2 = l2.get(..plane1.cfg.width).unwrap_or(l2);
-      delta += sad_row::sad_row(l1, l2, self.cpu_feature_level);
+      delta += sad_row::sad_row(l1, l2, self.encoder_config.cpu_feature_level);
     }
     delta as f64 / self.pixels as f64
   }

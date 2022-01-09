@@ -733,7 +733,7 @@ fn chroma_offset(
 }
 
 impl QuantizerParameters {
-  fn new_from_log_q(
+  pub(crate) fn new_from_log_q(
     log_base_q: i64, log_target_q: i64, bit_depth: usize,
     chroma_sampling: ChromaSampling, is_intra: bool,
   ) -> QuantizerParameters {
@@ -940,7 +940,7 @@ impl RCState {
 
   // TODO: Separate quantizers for Cb and Cr.
   pub(crate) fn select_qi<T: Pixel>(
-    &self, ctx: &ContextInner<T>, output_frameno: u64, fti: usize,
+    &self, ctx: &ContextInner<T>, fti: usize,
     maybe_prev_log_base_q: Option<i64>,
   ) -> QuantizerParameters {
     // Is rate control active?
@@ -1059,11 +1059,10 @@ impl RCState {
           // We position the target where the first forced keyframe beyond the
           //  end of the file would be (for consistency with 1-pass mode).
           if reservoir_tus >= self.ntus_left
-            && self.ntus_total as u64
-              > ctx.gop_input_frameno_start[&output_frameno]
+            && self.ntus_total as u64 > ctx.current_keyframe.input_frameno
           {
-            let nfinal_gop_tus = self.ntus_total
-              - (ctx.gop_input_frameno_start[&output_frameno] as i32);
+            let nfinal_gop_tus =
+              self.ntus_total - (ctx.current_keyframe.input_frameno as i32);
             if ctx.config.max_key_frame_interval as i32 > nfinal_gop_tus {
               let reservoir_pad = (ctx.config.max_key_frame_interval as i32
                 - nfinal_gop_tus)
@@ -1261,7 +1260,7 @@ impl RCState {
 
   // Computes a quantizer directly from the frame type and base quantizer index,
   // without consideration for rate control.
-  fn calc_flat_quantizer(
+  pub(crate) fn calc_flat_quantizer(
     base_qi: u8, bit_depth: usize, fti: usize,
   ) -> (i64, i64) {
     // TODO: Rename "quantizer" something that indicates it is a quantizer
@@ -1474,15 +1473,14 @@ impl RCState {
   }
 
   pub(crate) fn get_twopass_out_params<T: Pixel>(
-    &self, ctx: &ContextInner<T>, output_frameno: u64,
+    &self, ctx: &ContextInner<T>,
   ) -> TwoPassOutParams {
     let mut pass1_log_base_q = 0;
     let mut done_processing = false;
     if !self.pass1_data_retrieved {
       if self.twopass_state == PASS_SINGLE {
-        pass1_log_base_q = self
-          .select_qi(ctx, output_frameno, FRAME_SUBTYPE_I, None)
-          .log_base_q;
+        pass1_log_base_q =
+          self.select_qi(ctx, FRAME_SUBTYPE_I, None).log_base_q;
       }
     } else {
       done_processing = ctx.done_processing();

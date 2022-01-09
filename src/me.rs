@@ -40,7 +40,7 @@ pub struct MEStats {
 
 #[derive(Debug, Clone)]
 pub struct FrameMEStats {
-  stats: Box<[MEStats]>,
+  pub stats: Box<[MEStats]>,
   pub cols: usize,
   pub rows: usize,
 }
@@ -1507,9 +1507,16 @@ fn compute_mv_rd<T: Pixel>(
   plane_org: &PlaneRegion<'_, T>, plane_ref: &PlaneRegion<'_, T>,
 ) -> MVCandidateRD {
   let sad = if use_satd {
-    get_satd(plane_org, plane_ref, w, h, bit_depth, fi.cpu_feature_level)
+    get_satd(
+      plane_org,
+      plane_ref,
+      w,
+      h,
+      bit_depth,
+      fi.config.cpu_feature_level,
+    )
   } else {
-    get_sad(plane_org, plane_ref, w, h, bit_depth, fi.cpu_feature_level)
+    get_sad(plane_org, plane_ref, w, h, bit_depth, fi.config.cpu_feature_level)
   };
 
   let rate1 = get_mv_rate(cand_mv, pmv[0], fi.allow_high_precision_mv);

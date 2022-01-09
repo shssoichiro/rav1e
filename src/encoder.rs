@@ -8,6 +8,8 @@
 // PATENTS file, you can obtain it at www.aomedia.org/license/patent.
 
 use crate::activity::*;
+use crate::api::lookahead::LookaheadData;
+use crate::api::lookahead::PyramidDecision;
 use crate::api::*;
 use crate::cdef::*;
 use crate::context::*;
@@ -70,9 +72,10 @@ const MAX_NUM_SPATIAL_LAYERS: usize = 4;
 const MAX_NUM_OPERATING_POINTS: usize =
   MAX_NUM_TEMPORAL_LAYERS * MAX_NUM_SPATIAL_LAYERS;
 
+pub(crate) const IMPORTANCE_BLOCK_SHIFT: usize =
+  IMPORTANCE_BLOCK_TO_BLOCK_SHIFT + BLOCK_TO_PLANE_SHIFT;
 /// Size of blocks for the importance computation, in pixels.
-pub const IMPORTANCE_BLOCK_SIZE: usize =
-  1 << (IMPORTANCE_BLOCK_TO_BLOCK_SHIFT + BLOCK_TO_PLANE_SHIFT);
+pub const IMPORTANCE_BLOCK_SIZE: usize = 1 << IMPORTANCE_BLOCK_SHIFT;
 
 #[derive(Debug, Clone)]
 pub struct ReferenceFrame<T: Pixel> {
@@ -458,6 +461,7 @@ impl<T: Pixel> FrameState<T> {
     let luma_width = frame.planes[0].cfg.width;
     let luma_height = frame.planes[0].cfg.height;
 
+    // TODO: These don't need to be initialized on SEF frames, we can save CPU time.
     let hres = frame.planes[0].downsampled(fi.width, fi.height);
     let qres = hres.downsampled(fi.width, fi.height);
 
@@ -546,6 +550,7 @@ pub struct FrameInvariants<T: Pixel> {
   pub sb_height: usize,
   pub w_in_b: usize,
   pub h_in_b: usize,
+  pub output_frameno: u64,
   pub input_frameno: u64,
   pub order_hint: u32,
   pub show_frame: bool,
@@ -600,39 +605,12 @@ pub struct FrameInvariants<T: Pixel> {
   pub tx_mode_select: bool,
   pub enable_inter_txfm_split: bool,
   pub default_filter: FilterMode,
-  /// If true, this `FrameInvariants` corresponds to an invalid frame and
-  /// should be ignored. Invalid frames occur when a subgop is prematurely
-  /// ended, for example, by a key frame or the end of the video.
-  pub invalid: bool,
-  /// Motion vectors to the _original_ reference frames (not reconstructed).
-  /// Used for lookahead purposes.
-  ///
-  /// These objects are very expensive to create, so their creation
-  /// is deferred until it is needed.
-  pub lookahead_me_stats: Option<Arc<[FrameMEStats; REF_FRAMES as usize]>>,
-  /// The lookahead version of `rec_buffer`, used for storing and propagating
-  /// the original reference frames (rather than reconstructed ones). The
-  /// lookahead uses both `rec_buffer` and `lookahead_rec_buffer`, where
-  /// `rec_buffer` contains the current frame's reference frames and
-  /// `lookahead_rec_buffer` contains the next frame's reference frames.
-  pub lookahead_rec_buffer: ReferenceFramesSet<T>,
   /// Frame width in importance blocks.
   pub w_in_imp_b: usize,
   /// Frame height in importance blocks.
   pub h_in_imp_b: usize,
-  /// Intra prediction cost estimations for each importance block.
-  pub lookahead_intra_costs: Box<[u32]>,
-  /// Future importance values for each importance block. That is, a value
-  /// indicating how much future frames depend on the block (for example, via
-  /// inter-prediction).
-  pub block_importances: Box<[f32]>,
-  /// Pre-computed distortion_scale.
-  pub distortion_scales: Box<[DistortionScale]>,
   /// Pre-computed activity_scale.
   pub activity_scales: Box<[DistortionScale]>,
-
-  /// Target CPU feature level.
-  pub cpu_feature_level: crate::cpu_features::CpuFeatureLevel,
   pub activity_mask: ActivityMask,
   pub enable_segmentation: bool,
 }
@@ -669,12 +647,8 @@ impl<T: Pixel> FrameInvariants<T> {
       && config.speed_settings.transform.tx_domain_distortion;
     let use_tx_domain_rate = config.speed_settings.transform.tx_domain_rate;
 
-    let w_in_b = 2 * config.width.align_power_of_two_and_shift(3); // MiCols, ((width+7)/8)<<3 >> MI_SIZE_LOG2
-    let h_in_b = 2 * config.height.align_power_of_two_and_shift(3); // MiRows, ((height+7)/8)<<3 >> MI_SIZE_LOG2
-
-    // Width and height are padded to 8×8 block size.
-    let w_in_imp_b = w_in_b / 2;
-    let h_in_imp_b = h_in_b / 2;
+    let (w_in_b, h_in_b) = size_in_b(width, height);
+    let (w_in_imp_b, h_in_imp_b) = size_in_imp_b(width, height);
 
     Self {
       width,
@@ -687,6 +661,7 @@ impl<T: Pixel> FrameInvariants<T> {
       sb_height: height.align_power_of_two_and_shift(6),
       w_in_b,
       h_in_b,
+      output_frameno: 0,
       input_frameno: 0,
       order_hint: 0,
       show_frame: true,
@@ -757,26 +732,13 @@ impl<T: Pixel> FrameInvariants<T> {
       enable_early_exit: true,
       tx_mode_select: false,
       default_filter: FilterMode::REGULAR,
-      invalid: false,
-      lookahead_me_stats: None,
-      lookahead_rec_buffer: ReferenceFramesSet::new(),
       w_in_imp_b,
       h_in_imp_b,
-      // This is never used before it is assigned
-      lookahead_intra_costs: Box::new([]),
-      // dynamic allocation: once per frame
-      block_importances: vec![0.; w_in_imp_b * h_in_imp_b].into_boxed_slice(),
-      distortion_scales: vec![
-        DistortionScale::default();
-        w_in_imp_b * h_in_imp_b
-      ]
-      .into_boxed_slice(),
       activity_scales: vec![
         DistortionScale::default();
         w_in_imp_b * h_in_imp_b
       ]
       .into_boxed_slice(),
-      cpu_feature_level: Default::default(),
       activity_mask: Default::default(),
       enable_segmentation: config.speed_settings.segmentation
         != SegmentationLevel::Disabled,
@@ -790,12 +752,13 @@ impl<T: Pixel> FrameInvariants<T> {
   }
 
   pub fn new_key_frame(
-    config: Arc<EncoderConfig>, sequence: Arc<Sequence>,
-    gop_input_frameno_start: u64,
+    config: Arc<EncoderConfig>, sequence: Arc<Sequence>, input_frameno: u64,
+    output_frameno: u64,
   ) -> Self {
     let tx_mode_select = config.speed_settings.transform.rdo_tx_decision;
     let mut fi = Self::new(config, sequence);
-    fi.input_frameno = gop_input_frameno_start;
+    fi.input_frameno = input_frameno;
+    fi.output_frameno = output_frameno;
     fi.tx_mode_select = tx_mode_select;
     fi
   }
@@ -804,32 +767,23 @@ impl<T: Pixel> FrameInvariants<T> {
   /// This interface provides simpler usage, because we always need the produced
   /// FrameInvariants regardless of success or failure.
   pub(crate) fn new_inter_frame(
-    previous_fi: &Self, inter_cfg: &InterConfig, gop_input_frameno_start: u64,
-    output_frameno_in_gop: u64, next_keyframe_input_frameno: u64,
-    error_resilient: bool,
+    pd: PyramidDecision, previous_fi: &Self, inter_cfg: &InterConfig,
+    error_resilient: bool, prev_keyframe_output_frameno: u64,
   ) -> Self {
+    assert!(!pd.placeholder_frame);
+
     let mut fi = previous_fi.clone();
     fi.intra_only = false;
     fi.force_integer_mv = 0; // note: should be 1 if fi.intra_only is true
-    fi.idx_in_group_output =
-      inter_cfg.get_idx_in_group_output(output_frameno_in_gop);
+    fi.idx_in_group_output = pd.index_in_group;
     fi.tx_mode_select = fi.enable_inter_txfm_split;
 
+    let output_frameno_in_gop =
+      pd.output_frameno - prev_keyframe_output_frameno;
+    fi.output_frameno = pd.output_frameno;
     fi.order_hint =
       inter_cfg.get_order_hint(output_frameno_in_gop, fi.idx_in_group_output);
-    let input_frameno = inter_cfg
-      .get_input_frameno(output_frameno_in_gop, gop_input_frameno_start);
-    if input_frameno >= next_keyframe_input_frameno {
-      fi.frame_type = FrameType::INTER;
-      fi.show_existing_frame = false;
-      fi.show_frame = false;
-      fi.invalid = true;
-      return fi;
-    } else {
-      fi.invalid = false;
-    }
-
-    fi.pyramid_level = inter_cfg.get_level(fi.idx_in_group_output);
+    fi.pyramid_level = pd.level;
 
     fi.frame_type = if (inter_cfg.switch_frame_interval > 0)
       && (output_frameno_in_gop % inter_cfg.switch_frame_interval == 0)
@@ -859,9 +813,8 @@ impl<T: Pixel> FrameInvariants<T> {
 
     // this is the slot that the current frame is going to be saved into
     let slot_idx = inter_cfg.get_slot_idx(fi.pyramid_level, fi.order_hint);
-    fi.show_frame = inter_cfg.get_show_frame(fi.idx_in_group_output);
-    fi.show_existing_frame =
-      inter_cfg.get_show_existing_frame(fi.idx_in_group_output);
+    fi.show_frame = pd.show_frame;
+    fi.show_existing_frame = pd.show_existing_frame;
     fi.frame_to_show_map_idx = slot_idx;
     fi.refresh_frame_flags = if fi.frame_type == FrameType::SWITCH {
       ALL_REF_FRAMES_MASK
@@ -936,7 +889,7 @@ impl<T: Pixel> FrameInvariants<T> {
     } else {
       ReferenceMode::SINGLE
     };
-    fi.input_frameno = input_frameno;
+    fi.input_frameno = pd.input_frameno;
     fi.me_range_scale = (inter_cfg.group_input_len >> fi.pyramid_level) as u8;
     fi
   }
@@ -1007,6 +960,16 @@ impl<T: Pixel> FrameInvariants<T> {
       // TODO: implement FastSearch and FullSearch
       _ => unreachable!(),
     }
+  }
+
+  pub(crate) fn copy_quantizers(&mut self, other_fi: &FrameInvariants<T>) {
+    self.base_q_idx = other_fi.base_q_idx;
+    self.lambda = other_fi.lambda;
+    self.me_lambda = other_fi.me_lambda;
+    self.dist_scale = other_fi.dist_scale;
+    self.cdef_damping = other_fi.cdef_damping;
+    self.cdef_y_strengths = other_fi.cdef_y_strengths;
+    self.cdef_uv_strengths = other_fi.cdef_uv_strengths;
   }
 
   #[inline(always)]
@@ -1109,6 +1072,7 @@ fn get_qidx<T: Pixel>(
 pub fn encode_tx_block<T: Pixel, W: Writer>(
   fi: &FrameInvariants<T>,
   ts: &mut TileStateMut<'_, T>,
+  lookahead_data: &LookaheadData<T>,
   cw: &mut ContextWriter,
   w: &mut W,
   p: usize,
@@ -1197,7 +1161,7 @@ pub fn encode_tx_block<T: Pixel, W: Writer>(
       pred_intra_param,
       ief_params,
       &edge_buf,
-      fi.cpu_feature_level,
+      fi.config.cpu_feature_level,
     );
   }
 
@@ -1248,7 +1212,7 @@ pub fn encode_tx_block<T: Pixel, W: Writer>(
     tx_size,
     tx_type,
     fi.sequence.bit_depth,
-    fi.cpu_feature_level,
+    fi.config.cpu_feature_level,
   );
 
   let eob = ts.qc.quantize(coeffs, qcoeffs, tx_size, tx_type);
@@ -1293,7 +1257,7 @@ pub fn encode_tx_block<T: Pixel, W: Writer>(
     fi.sequence.bit_depth,
     fi.dc_delta_q[p],
     fi.ac_delta_q[p],
-    fi.cpu_feature_level,
+    fi.config.cpu_feature_level,
   );
 
   if !fi.use_tx_domain_distortion || need_recon_pixel {
@@ -1304,7 +1268,7 @@ pub fn encode_tx_block<T: Pixel, W: Writer>(
       tx_size,
       tx_type,
       fi.sequence.bit_depth,
-      fi.cpu_feature_level,
+      fi.config.cpu_feature_level,
     );
   }
 
@@ -1345,7 +1309,12 @@ pub fn encode_tx_block<T: Pixel, W: Writer>(
         w.add_bits_frac(estimated_rate as u32);
       }
 
-      let bias = distortion_scale(fi, ts.to_frame_block_offset(tx_bo), bsize);
+      let bias = distortion_scale(
+        fi,
+        lookahead_data,
+        ts.to_frame_block_offset(tx_bo),
+        bsize,
+      );
       RawDistortion::new(raw_tx_dist) * bias * fi.dist_scale[p]
     } else {
       ScaledDistortion::zero()
@@ -1620,12 +1589,13 @@ pub fn encode_block_pre_cdef<T: Pixel, W: Writer>(
 
 pub fn encode_block_post_cdef<T: Pixel, W: Writer>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
-  cw: &mut ContextWriter, w: &mut W, luma_mode: PredictionMode,
-  chroma_mode: PredictionMode, angle_delta: AngleDelta,
-  ref_frames: [RefType; 2], mvs: [MotionVector; 2], bsize: BlockSize,
-  tile_bo: TileBlockOffset, skip: bool, cfl: CFLParams, tx_size: TxSize,
-  tx_type: TxType, mode_context: usize, mv_stack: &[CandidateMV],
-  rdo_type: RDOType, need_recon_pixel: bool, record_stats: bool,
+  lookahead_data: &LookaheadData<T>, cw: &mut ContextWriter, w: &mut W,
+  luma_mode: PredictionMode, chroma_mode: PredictionMode,
+  angle_delta: AngleDelta, ref_frames: [RefType; 2], mvs: [MotionVector; 2],
+  bsize: BlockSize, tile_bo: TileBlockOffset, skip: bool, cfl: CFLParams,
+  tx_size: TxSize, tx_type: TxType, mode_context: usize,
+  mv_stack: &[CandidateMV], rdo_type: RDOType, need_recon_pixel: bool,
+  record_stats: bool,
 ) -> (bool, ScaledDistortion) {
   let planes =
     if fi.sequence.chroma_sampling == ChromaSampling::Cs400 { 1 } else { 3 };
@@ -1885,6 +1855,7 @@ pub fn encode_block_post_cdef<T: Pixel, W: Writer>(
     write_tx_tree(
       fi,
       ts,
+      lookahead_data,
       cw,
       w,
       luma_mode,
@@ -1902,6 +1873,7 @@ pub fn encode_block_post_cdef<T: Pixel, W: Writer>(
     write_tx_blocks(
       fi,
       ts,
+      lookahead_data,
       cw,
       w,
       luma_mode,
@@ -1997,11 +1969,11 @@ pub fn luma_ac<T: Pixel>(
 
 pub fn write_tx_blocks<T: Pixel, W: Writer>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
-  cw: &mut ContextWriter, w: &mut W, luma_mode: PredictionMode,
-  chroma_mode: PredictionMode, angle_delta: AngleDelta,
-  tile_bo: TileBlockOffset, bsize: BlockSize, tx_size: TxSize,
-  tx_type: TxType, skip: bool, cfl: CFLParams, luma_only: bool,
-  rdo_type: RDOType, need_recon_pixel: bool,
+  lookahead_data: &LookaheadData<T>, cw: &mut ContextWriter, w: &mut W,
+  luma_mode: PredictionMode, chroma_mode: PredictionMode,
+  angle_delta: AngleDelta, tile_bo: TileBlockOffset, bsize: BlockSize,
+  tx_size: TxSize, tx_type: TxType, skip: bool, cfl: CFLParams,
+  luma_only: bool, rdo_type: RDOType, need_recon_pixel: bool,
 ) -> (bool, ScaledDistortion) {
   let bw = bsize.width_mi() / tx_size.width_mi();
   let bh = bsize.height_mi() / tx_size.height_mi();
@@ -2037,6 +2009,7 @@ pub fn write_tx_blocks<T: Pixel, W: Writer>(
       let (has_coeff, dist) = encode_tx_block(
         fi,
         ts,
+        lookahead_data,
         cw,
         w,
         0,
@@ -2123,6 +2096,7 @@ pub fn write_tx_blocks<T: Pixel, W: Writer>(
         let (has_coeff, dist) = encode_tx_block(
           fi,
           ts,
+          lookahead_data,
           cw,
           w,
           p,
@@ -2157,10 +2131,10 @@ pub fn write_tx_blocks<T: Pixel, W: Writer>(
 
 pub fn write_tx_tree<T: Pixel, W: Writer>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
-  cw: &mut ContextWriter, w: &mut W, luma_mode: PredictionMode,
-  angle_delta_y: i8, tile_bo: TileBlockOffset, bsize: BlockSize,
-  tx_size: TxSize, tx_type: TxType, skip: bool, luma_only: bool,
-  rdo_type: RDOType, need_recon_pixel: bool,
+  lookahead_data: &LookaheadData<T>, cw: &mut ContextWriter, w: &mut W,
+  luma_mode: PredictionMode, angle_delta_y: i8, tile_bo: TileBlockOffset,
+  bsize: BlockSize, tx_size: TxSize, tx_type: TxType, skip: bool,
+  luma_only: bool, rdo_type: RDOType, need_recon_pixel: bool,
 ) -> (bool, ScaledDistortion) {
   if skip {
     return (false, ScaledDistortion::zero());
@@ -2200,6 +2174,7 @@ pub fn write_tx_tree<T: Pixel, W: Writer>(
       let (has_coeff, dist) = encode_tx_block(
         fi,
         ts,
+        lookahead_data,
         cw,
         w,
         0,
@@ -2284,6 +2259,7 @@ pub fn write_tx_tree<T: Pixel, W: Writer>(
         let (has_coeff, dist) = encode_tx_block(
           fi,
           ts,
+          lookahead_data,
           cw,
           w,
           p,
@@ -2314,9 +2290,10 @@ pub fn write_tx_tree<T: Pixel, W: Writer>(
 
 pub fn encode_block_with_modes<T: Pixel, W: Writer>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
-  cw: &mut ContextWriter, w_pre_cdef: &mut W, w_post_cdef: &mut W,
-  bsize: BlockSize, tile_bo: TileBlockOffset,
-  mode_decision: &PartitionParameters, rdo_type: RDOType, record_stats: bool,
+  lookahead_data: &LookaheadData<T>, cw: &mut ContextWriter,
+  w_pre_cdef: &mut W, w_post_cdef: &mut W, bsize: BlockSize,
+  tile_bo: TileBlockOffset, mode_decision: &PartitionParameters,
+  rdo_type: RDOType, record_stats: bool,
 ) {
   let (mode_luma, mode_chroma) =
     (mode_decision.pred_mode_luma, mode_decision.pred_mode_chroma);
@@ -2338,7 +2315,16 @@ pub fn encode_block_with_modes<T: Pixel, W: Writer>(
   let (tx_size, tx_type) = if !mode_decision.skip && !mode_decision.has_coeff {
     skip = true;
     rdo_tx_size_type(
-      fi, ts, cw, bsize, tile_bo, mode_luma, ref_frames, mvs, skip,
+      fi,
+      ts,
+      lookahead_data,
+      cw,
+      bsize,
+      tile_bo,
+      mode_luma,
+      ref_frames,
+      mvs,
+      skip,
     )
   } else {
     (mode_decision.tx_size, mode_decision.tx_type)
@@ -2356,6 +2342,7 @@ pub fn encode_block_with_modes<T: Pixel, W: Writer>(
   encode_block_post_cdef(
     fi,
     ts,
+    lookahead_data,
     cw,
     if cdef_coded { w_post_cdef } else { w_pre_cdef },
     mode_luma,
@@ -2379,9 +2366,9 @@ pub fn encode_block_with_modes<T: Pixel, W: Writer>(
 
 fn encode_partition_bottomup<T: Pixel, W: Writer>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
-  cw: &mut ContextWriter, w_pre_cdef: &mut W, w_post_cdef: &mut W,
-  bsize: BlockSize, tile_bo: TileBlockOffset, ref_rd_cost: f64,
-  inter_cfg: &InterConfig,
+  lookahead_data: &LookaheadData<T>, cw: &mut ContextWriter,
+  w_pre_cdef: &mut W, w_post_cdef: &mut W, bsize: BlockSize,
+  tile_bo: TileBlockOffset, ref_rd_cost: f64, inter_cfg: &InterConfig,
 ) -> PartitionGroupParameters {
   let rdo_type = RDOType::PixelDistRealRate;
   let mut rd_cost = std::f64::MAX;
@@ -2438,7 +2425,7 @@ fn encode_partition_bottomup<T: Pixel, W: Writer>(
     };
 
     let mode_decision =
-      rdo_mode_decision(fi, ts, cw, bsize, tile_bo, inter_cfg);
+      rdo_mode_decision(fi, ts, lookahead_data, cw, bsize, tile_bo, inter_cfg);
 
     if !mode_decision.pred_mode_luma.is_intra() {
       // Fill the saved motion structure
@@ -2461,6 +2448,7 @@ fn encode_partition_bottomup<T: Pixel, W: Writer>(
       encode_block_with_modes(
         fi,
         ts,
+        lookahead_data,
         cw,
         w_pre_cdef,
         w_post_cdef,
@@ -2557,6 +2545,7 @@ fn encode_partition_bottomup<T: Pixel, W: Writer>(
         let child_rdo_output = encode_partition_bottomup(
           fi,
           ts,
+          lookahead_data,
           cw,
           w_pre_cdef,
           w_post_cdef,
@@ -2629,6 +2618,7 @@ fn encode_partition_bottomup<T: Pixel, W: Writer>(
         encode_block_with_modes(
           fi,
           ts,
+          lookahead_data,
           cw,
           w_pre_cdef,
           w_post_cdef,
@@ -2667,9 +2657,10 @@ fn encode_partition_bottomup<T: Pixel, W: Writer>(
 
 fn encode_partition_topdown<T: Pixel, W: Writer>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
-  cw: &mut ContextWriter, w_pre_cdef: &mut W, w_post_cdef: &mut W,
-  bsize: BlockSize, tile_bo: TileBlockOffset,
-  block_output: &Option<PartitionGroupParameters>, inter_cfg: &InterConfig,
+  lookahead_data: &LookaheadData<T>, cw: &mut ContextWriter,
+  w_pre_cdef: &mut W, w_post_cdef: &mut W, bsize: BlockSize,
+  tile_bo: TileBlockOffset, block_output: &Option<PartitionGroupParameters>,
+  inter_cfg: &InterConfig,
 ) {
   if tile_bo.0.x >= ts.mi_width || tile_bo.0.y >= ts.mi_height {
     return;
@@ -2717,6 +2708,7 @@ fn encode_partition_topdown<T: Pixel, W: Writer>(
     rdo_output = rdo_partition_decision(
       fi,
       ts,
+      lookahead_data,
       cw,
       w_pre_cdef,
       w_post_cdef,
@@ -2752,7 +2744,15 @@ fn encode_partition_topdown<T: Pixel, W: Writer>(
         rdo_output.part_modes[0].clone()
       } else {
         // Make a prediction mode decision for blocks encoded with no rdo_partition_decision call (e.g. edges)
-        rdo_mode_decision(fi, ts, cw, bsize, tile_bo, inter_cfg)
+        rdo_mode_decision(
+          fi,
+          ts,
+          lookahead_data,
+          cw,
+          bsize,
+          tile_bo,
+          inter_cfg,
+        )
       };
 
       let mut mode_luma = part_decision.pred_mode_luma;
@@ -2772,7 +2772,16 @@ fn encode_partition_topdown<T: Pixel, W: Writer>(
       // because, with top-down partition RDO, the neighboring contexts
       // of current partition can change, i.e. neighboring partitions can split down more.
       let (tx_size, tx_type) = rdo_tx_size_type(
-        fi, ts, cw, bsize, tile_bo, mode_luma, ref_frames, mvs, skip,
+        fi,
+        ts,
+        lookahead_data,
+        cw,
+        bsize,
+        tile_bo,
+        mode_luma,
+        ref_frames,
+        mvs,
+        skip,
       );
 
       let mut mv_stack = ArrayVec::<CandidateMV, 9>::new();
@@ -2882,6 +2891,7 @@ fn encode_partition_topdown<T: Pixel, W: Writer>(
       encode_block_post_cdef(
         fi,
         ts,
+        lookahead_data,
         cw,
         if cdef_coded { w_post_cdef } else { w_pre_cdef },
         mode_luma,
@@ -2913,6 +2923,7 @@ fn encode_partition_topdown<T: Pixel, W: Writer>(
           encode_partition_topdown(
             fi,
             ts,
+            lookahead_data,
             cw,
             w_pre_cdef,
             w_post_cdef,
@@ -2951,6 +2962,7 @@ fn encode_partition_topdown<T: Pixel, W: Writer>(
           encode_partition_topdown(
             fi,
             ts,
+            lookahead_data,
             cw,
             w_pre_cdef,
             w_post_cdef,
@@ -2989,7 +3001,8 @@ fn get_initial_cdfcontext<T: Pixel>(fi: &FrameInvariants<T>) -> CDFContext {
 
 #[hawktracer(encode_tile_group)]
 fn encode_tile_group<T: Pixel>(
-  fi: &FrameInvariants<T>, fs: &mut FrameState<T>, inter_cfg: &InterConfig,
+  fi: &FrameInvariants<T>, fs: &mut FrameState<T>,
+  lookahead_data: &LookaheadData<T>, inter_cfg: &InterConfig,
 ) -> Vec<u8> {
   let planes =
     if fi.sequence.chroma_sampling == ChromaSampling::Cs400 { 1 } else { 3 };
@@ -3006,7 +3019,14 @@ fn encode_tile_group<T: Pixel>(
     .collect::<Vec<_>>()
     .into_par_iter()
     .map(|(mut ctx, cdf)| {
-      let raw = encode_tile(fi, &mut ctx.ts, cdf, &mut ctx.tb, inter_cfg);
+      let raw = encode_tile(
+        fi,
+        &mut ctx.ts,
+        lookahead_data,
+        cdf,
+        &mut ctx.tb,
+        inter_cfg,
+      );
       (raw, ctx.ts)
     })
     .unzip();
@@ -3130,10 +3150,10 @@ pub struct SBSQueueEntry {
 
 fn check_lf_queue<T: Pixel>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
-  cw: &mut ContextWriter, w: &mut WriterBase<WriterEncoder>,
-  sbs_q: &mut VecDeque<SBSQueueEntry>, last_lru_ready: &mut [i32; 3],
-  last_lru_rdoed: &mut [i32; 3], last_lru_coded: &mut [i32; 3],
-  deblock_p: bool,
+  lookahead_data: &LookaheadData<T>, cw: &mut ContextWriter,
+  w: &mut WriterBase<WriterEncoder>, sbs_q: &mut VecDeque<SBSQueueEntry>,
+  last_lru_ready: &mut [i32; 3], last_lru_rdoed: &mut [i32; 3],
+  last_lru_coded: &mut [i32; 3], deblock_p: bool,
 ) {
   let mut check_queue = true;
   let planes = if fi.sequence.chroma_sampling == ChromaSampling::Cs400 {
@@ -3180,7 +3200,15 @@ fn check_lf_queue<T: Pixel>(
             }
           }
           if !already_rdoed {
-            rdo_loop_decision(qe.sbo, fi, ts, cw, w, deblock_p);
+            rdo_loop_decision(
+              qe.sbo,
+              fi,
+              ts,
+              lookahead_data,
+              cw,
+              w,
+              deblock_p,
+            );
             for pli in 0..planes {
               if qe.lru_index[pli] != -1
                 && last_lru_rdoed[pli] < qe.lru_index[pli]
@@ -3222,8 +3250,8 @@ fn check_lf_queue<T: Pixel>(
 #[hawktracer(encode_tile)]
 fn encode_tile<'a, T: Pixel>(
   fi: &FrameInvariants<T>, ts: &mut TileStateMut<'_, T>,
-  fc: &'a mut CDFContext, blocks: &'a mut TileBlocksMut<'a>,
-  inter_cfg: &InterConfig,
+  lookahead_data: &LookaheadData<T>, fc: &'a mut CDFContext,
+  blocks: &'a mut TileBlocksMut<'a>, inter_cfg: &InterConfig,
 ) -> Vec<u8> {
   let mut w = WriterEncoder::new();
   let planes =
@@ -3269,6 +3297,7 @@ fn encode_tile<'a, T: Pixel>(
         encode_partition_bottomup(
           fi,
           ts,
+          lookahead_data,
           &mut cw,
           &mut sbs_qe.w_pre_cdef,
           &mut sbs_qe.w_post_cdef,
@@ -3281,6 +3310,7 @@ fn encode_tile<'a, T: Pixel>(
         encode_partition_topdown(
           fi,
           ts,
+          lookahead_data,
           &mut cw,
           &mut sbs_qe.w_pre_cdef,
           &mut sbs_qe.w_post_cdef,
@@ -3322,6 +3352,7 @@ fn encode_tile<'a, T: Pixel>(
           check_lf_queue(
             fi,
             ts,
+            lookahead_data,
             &mut cw,
             &mut w,
             &mut sbs_q,
@@ -3378,6 +3409,7 @@ fn encode_tile<'a, T: Pixel>(
       check_lf_queue(
         fi,
         ts,
+        lookahead_data,
         &mut cw,
         &mut w,
         &mut sbs_q,
@@ -3402,6 +3434,7 @@ fn encode_tile<'a, T: Pixel>(
       check_lf_queue(
         fi,
         ts,
+        lookahead_data,
         &mut cw,
         &mut w,
         &mut sbs_q,
@@ -3501,10 +3534,10 @@ fn get_initial_segmentation<T: Pixel>(
 }
 
 pub fn encode_frame<T: Pixel>(
-  fi: &FrameInvariants<T>, fs: &mut FrameState<T>, inter_cfg: &InterConfig,
+  fi: &FrameInvariants<T>, fs: &mut FrameState<T>,
+  lookahead_data: &LookaheadData<T>, inter_cfg: &InterConfig,
 ) -> Vec<u8> {
   debug_assert!(!fi.show_existing_frame);
-  debug_assert!(!fi.invalid);
   let obu_extension = 0;
 
   let mut packet = Vec::new();
@@ -3513,7 +3546,7 @@ pub fn encode_frame<T: Pixel>(
     fs.segmentation = get_initial_segmentation(fi);
     segmentation_optimize(fi, fs);
   }
-  let tile_group = encode_tile_group(fi, fs, inter_cfg);
+  let tile_group = encode_tile_group(fi, fs, lookahead_data, inter_cfg);
 
   if fi.frame_type == FrameType::KEY {
     write_key_frame_obus(&mut packet, fi, obu_extension).unwrap();

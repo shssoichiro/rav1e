@@ -363,7 +363,7 @@ pub fn cdef_analyze_superblock<T: Pixel>(
             &in_slice.reslice(8 * bx as isize, 8 * by as isize),
             &mut var,
             coeff_shift,
-            fi.cpu_feature_level,
+            fi.config.cpu_feature_level,
           ) as u8;
           dir.var[bx][by] = var as i32;
         }
@@ -543,7 +543,7 @@ pub fn cdef_filter_superblock<T: Pixel>(
                 xdec,
                 ydec,
                 edges,
-                fi.cpu_feature_level,
+                fi.config.cpu_feature_level,
               );
             }
           } else {

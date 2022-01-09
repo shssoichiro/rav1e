@@ -122,7 +122,9 @@ impl<T: Pixel> Context<T> {
     {
       return Err(EncoderStatus::EnoughData);
     // The rate control can process at most std::i32::MAX frames
-    } else if self.inner.frame_count == std::i32::MAX as u64 - 1 {
+    } else if self.inner.frame_count
+      == self.inner.limit.unwrap_or(std::i32::MAX as u64 - 1)
+    {
       self.inner.limit = Some(self.inner.frame_count);
       self.is_flushing = true;
     }
@@ -157,10 +159,7 @@ impl<T: Pixel> Context<T> {
   /// enum.EncoderStatus.html#variant.LimitReached
   #[inline]
   pub fn twopass_out(&mut self) -> Option<&[u8]> {
-    let params = self
-      .inner
-      .rc_state
-      .get_twopass_out_params(&self.inner, self.inner.output_frameno);
+    let params = self.inner.rc_state.get_twopass_out_params(&self.inner);
     self.inner.rc_state.twopass_out(params)
   }
 

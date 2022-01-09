@@ -7,6 +7,7 @@
 // Media Patent License 1.0 was not distributed with this source code in the
 // PATENTS file, you can obtain it at www.aomedia.org/license/patent.
 
+use crate::api::lookahead::LookaheadData;
 use crate::context::*;
 use crate::header::PRIMARY_REF_NONE;
 use crate::partition::BlockSize;
@@ -73,8 +74,9 @@ pub fn segmentation_optimize<T: Pixel>(
 }
 
 pub fn select_segment<T: Pixel>(
-  fi: &FrameInvariants<T>, ts: &TileStateMut<'_, T>, tile_bo: TileBlockOffset,
-  bsize: BlockSize, skip: bool,
+  fi: &FrameInvariants<T>, lookahead_data: &LookaheadData<T>,
+  ts: &TileStateMut<'_, T>, tile_bo: TileBlockOffset, bsize: BlockSize,
+  skip: bool,
 ) -> std::ops::RangeInclusive<u8> {
   use crate::api::SegmentationLevel;
   use crate::rdo::spatiotemporal_scale;
@@ -94,7 +96,7 @@ pub fn select_segment<T: Pixel>(
   }
 
   let frame_bo = ts.to_frame_block_offset(tile_bo);
-  let scale = spatiotemporal_scale(fi, frame_bo, bsize);
+  let scale = spatiotemporal_scale(fi, lookahead_data, frame_bo, bsize);
 
   // TODO: Replace this calculation with precomputed scale thresholds.
   let seg_ac_q: ArrayVec<_, 3> = if fi.enable_segmentation {
