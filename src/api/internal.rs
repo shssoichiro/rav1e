@@ -655,7 +655,7 @@ impl<T: Pixel> ContextInner<T> {
         input_hres: fs.input_hres.clone(),
         input_qres: fs.input_qres.clone(),
         cdfs: fs.cdfs,
-        frame_me_stats: fs.frame_me_stats.clone(),
+        frame_me_stats: Arc::new(fs.frame_me_stats.clone()),
         output_frameno,
         segmentation: fs.segmentation,
       });
@@ -686,7 +686,7 @@ impl<T: Pixel> ContextInner<T> {
     compute_motion_vectors(fi, fs, &self.inter_cfg);
 
     // Save the motion vectors to FrameInvariants.
-    fi.lookahead_me_stats = Some(fs.frame_me_stats.clone());
+    fi.lookahead_me_stats = Some(Arc::new(fs.frame_me_stats.clone()));
 
     #[cfg(feature = "dump_lookahead_data")]
     {
@@ -738,7 +738,7 @@ impl<T: Pixel> ContextInner<T> {
       input_hres: fs.input_hres.clone(),
       input_qres: fs.input_qres.clone(),
       cdfs: fs.cdfs,
-      frame_me_stats: fs.frame_me_stats.clone(),
+      frame_me_stats: Arc::new(fs.frame_me_stats.clone()),
       output_frameno,
       segmentation: fs.segmentation,
     });
@@ -1138,7 +1138,10 @@ impl<T: Pixel> ContextInner<T> {
         false,
       );
       let (rec, source) = if frame_data.fi.show_frame {
-        (Some(frame_data.fs.rec.clone()), Some(frame_data.fs.input.clone()))
+        (
+          Some(Arc::new(frame_data.fs.rec.clone())),
+          Some(frame_data.fs.input.clone()),
+        )
       } else {
         (None, None)
       };
@@ -1227,14 +1230,13 @@ impl<T: Pixel> ContextInner<T> {
       let planes =
         if frame_data.fi.sequence.chroma_sampling == Cs400 { 1 } else { 3 };
 
-      Arc::get_mut(&mut frame_data.fs.rec).unwrap().pad(
-        frame_data.fi.width,
-        frame_data.fi.height,
-        planes,
-      );
+      frame_data.fs.rec.pad(frame_data.fi.width, frame_data.fi.height, planes);
 
       let (rec, source) = if frame_data.fi.show_frame {
-        (Some(frame_data.fs.rec.clone()), Some(frame_data.fs.input.clone()))
+        (
+          Some(Arc::new(frame_data.fs.rec.clone())),
+          Some(frame_data.fs.input.clone()),
+        )
       } else {
         (None, None)
       };

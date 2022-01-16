@@ -396,7 +396,7 @@ pub struct FrameState<T: Pixel> {
   pub input: Arc<Frame<T>>,
   pub input_hres: Arc<Plane<T>>, // half-resolution version of input luma
   pub input_qres: Arc<Plane<T>>, // quarter-resolution version of input luma
-  pub rec: Arc<Frame<T>>,
+  pub rec: Frame<T>,
   pub cdfs: CDFContext,
   pub context_update_tile_id: usize, // tile id used for the CDFontext
   pub max_tile_size_bytes: u32,
@@ -405,7 +405,7 @@ pub struct FrameState<T: Pixel> {
   pub restoration: RestorationState,
   // Because we only reference these within a tile context,
   // these are stored per-tile for easier access.
-  pub frame_me_stats: Arc<[FrameMEStats; REF_FRAMES as usize]>,
+  pub frame_me_stats: [FrameMEStats; REF_FRAMES as usize],
   pub enc_stats: EncoderStats,
 }
 
@@ -433,11 +433,7 @@ impl<T: Pixel> FrameState<T> {
       input: frame,
       input_hres: Arc::new(hres),
       input_qres: Arc::new(qres),
-      rec: Arc::new(Frame::new(
-        luma_width,
-        luma_height,
-        fi.sequence.chroma_sampling,
-      )),
+      rec: Frame::new(luma_width, luma_height, fi.sequence.chroma_sampling),
       cdfs: CDFContext::new(0),
       context_update_tile_id: 0,
       max_tile_size_bytes: 0,
@@ -3020,7 +3016,7 @@ fn encode_tile_group<T: Pixel>(
   if fi.sequence.enable_restoration {
     // Until the loop filters are better pipelined, we'll need to keep
     // around a copy of both the deblocked and cdeffed frame.
-    let deblocked_frame = (*fs.rec).clone();
+    let deblocked_frame = fs.rec.clone();
 
     /* TODO: Don't apply if lossless */
     if fi.sequence.enable_cdef {
@@ -3029,15 +3025,11 @@ fn encode_tile_group<T: Pixel>(
       cdef_filter_tile(fi, &deblocked_frame, &blocks.as_tile_blocks(), rec);
     }
     /* TODO: Don't apply if lossless */
-    fs.restoration.lrf_filter_frame(
-      Arc::get_mut(&mut fs.rec).unwrap(),
-      &deblocked_frame,
-      fi,
-    );
+    fs.restoration.lrf_filter_frame(&mut fs.rec, &deblocked_frame, fi);
   } else {
     /* TODO: Don't apply if lossless */
     if fi.sequence.enable_cdef {
-      let deblocked_frame = (*fs.rec).clone();
+      let deblocked_frame = fs.rec.clone();
       let ts = &mut fs.as_tile_state_mut();
       let rec = &mut ts.rec;
       cdef_filter_tile(fi, &deblocked_frame, &blocks.as_tile_blocks(), rec);
@@ -3442,7 +3434,7 @@ pub fn encode_show_existing_frame<T: Pixel>(
 
   let map_idx = fi.frame_to_show_map_idx as usize;
   if let Some(ref rec) = fi.rec_buffer.frames[map_idx] {
-    let fs_rec = Arc::get_mut(&mut fs.rec).unwrap();
+    let fs_rec = &mut fs.rec;
     let planes =
       if fi.sequence.chroma_sampling == ChromaSampling::Cs400 { 1 } else { 3 };
     for p in 0..planes {
@@ -3523,11 +3515,11 @@ pub fn update_rec_buffer<T: Pixel>(
     height: fi.height as u32,
     render_width: fi.render_width,
     render_height: fi.render_height,
-    frame: fs.rec.clone(),
+    frame: Arc::new(fs.rec.clone()),
     input_hres: fs.input_hres.clone(),
     input_qres: fs.input_qres.clone(),
     cdfs: fs.cdfs,
-    frame_me_stats: fs.frame_me_stats.clone(),
+    frame_me_stats: Arc::new(fs.frame_me_stats.clone()),
     output_frameno,
     segmentation: fs.segmentation,
   });
