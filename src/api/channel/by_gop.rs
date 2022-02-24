@@ -170,7 +170,7 @@ fn workerpool<T: Pixel>(
               }
             }
 
-            inner.limit = Some(inner.frame_count);
+            inner.limit = Some(inner.frames_read);
             let _ = inner.send_frame(None, None);
 
             loop {

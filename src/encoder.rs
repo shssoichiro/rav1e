@@ -531,7 +531,6 @@ pub struct SegmentationState {
 }
 
 // Frame Invariants are invariant inside a frame
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FrameInvariants<T: Pixel> {
   pub sequence: Arc<Sequence>,
@@ -600,10 +599,6 @@ pub struct FrameInvariants<T: Pixel> {
   pub tx_mode_select: bool,
   pub enable_inter_txfm_split: bool,
   pub default_filter: FilterMode,
-  /// If true, this `FrameInvariants` corresponds to an invalid frame and
-  /// should be ignored. Invalid frames occur when a subgop is prematurely
-  /// ended, for example, by a key frame or the end of the video.
-  pub invalid: bool,
   /// Motion vectors to the _original_ reference frames (not reconstructed).
   /// Used for lookahead purposes.
   ///
@@ -757,7 +752,6 @@ impl<T: Pixel> FrameInvariants<T> {
       enable_early_exit: true,
       tx_mode_select: false,
       default_filter: FilterMode::REGULAR,
-      invalid: false,
       lookahead_me_stats: None,
       lookahead_rec_buffer: ReferenceFramesSet::new(),
       w_in_imp_b,
@@ -790,12 +784,11 @@ impl<T: Pixel> FrameInvariants<T> {
   }
 
   pub fn new_key_frame(
-    config: Arc<EncoderConfig>, sequence: Arc<Sequence>,
-    gop_input_frameno_start: u64,
+    config: Arc<EncoderConfig>, sequence: Arc<Sequence>, frameno: u64,
   ) -> Self {
     let tx_mode_select = config.speed_settings.transform.rdo_tx_decision;
     let mut fi = Self::new(config, sequence);
-    fi.input_frameno = gop_input_frameno_start;
+    fi.input_frameno = frameno;
     fi.tx_mode_select = tx_mode_select;
     fi
   }
@@ -804,21 +797,18 @@ impl<T: Pixel> FrameInvariants<T> {
   /// This interface provides simpler usage, because we always need the produced
   /// FrameInvariants regardless of success or failure.
   pub(crate) fn new_inter_frame(
-    previous_fi: &Self, inter_cfg: &InterConfig, gop_input_frameno_start: u64,
-    output_frameno_in_gop: u64, next_keyframe_input_frameno: u64,
-    error_resilient: bool,
+    input_frameno: u64, previous_fi: &Self, inter_cfg: &InterConfig,
+    output_frameno_in_gop: u64, output_frameno_in_group: u64,
+    next_keyframe_input_frameno: u64, error_resilient: bool,
   ) -> Self {
     let mut fi = previous_fi.clone();
     fi.intra_only = false;
     fi.force_integer_mv = 0; // note: should be 1 if fi.intra_only is true
-    fi.idx_in_group_output =
-      inter_cfg.get_idx_in_group_output(output_frameno_in_gop);
+    fi.idx_in_group_output = output_frameno_in_group;
     fi.tx_mode_select = fi.enable_inter_txfm_split;
 
     fi.order_hint =
       inter_cfg.get_order_hint(output_frameno_in_gop, fi.idx_in_group_output);
-    let input_frameno = inter_cfg
-      .get_input_frameno(output_frameno_in_gop, gop_input_frameno_start);
     if input_frameno >= next_keyframe_input_frameno {
       fi.frame_type = FrameType::INTER;
       fi.show_existing_frame = false;

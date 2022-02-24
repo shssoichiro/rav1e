@@ -297,7 +297,7 @@ impl Config {
         let _ = inner.send_frame(frame, params); // TODO make sure it cannot fail.
       }
 
-      inner.limit = Some(inner.frame_count);
+      inner.limit = Some(inner.frames_read);
       let _ = inner.send_frame(None, None);
 
       loop {
