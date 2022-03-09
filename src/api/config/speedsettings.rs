@@ -100,6 +100,7 @@ impl Default for SpeedSettings {
       prediction: PredictionSpeedSettings {
         prediction_modes: PredictionModesSetting::ComplexAll,
         fine_directional_intra: true,
+        prune_zero_mv: true,
       },
       motion: MotionSpeedSettings {
         include_near_mvs: true,
@@ -274,6 +275,9 @@ pub struct PredictionSpeedSettings {
 
   /// Use fine directional intra prediction
   pub fine_directional_intra: bool,
+
+  /// Early pruning for global MVs.
+  pub prune_zero_mv: bool,
 }
 
 /// Range of block sizes to use.

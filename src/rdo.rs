@@ -45,6 +45,7 @@ use crate::{encode_block_post_cdef, encode_block_pre_cdef};
 use crate::partition::PartitionType::*;
 use arrayvec::*;
 use itertools::izip;
+use itertools::Itertools;
 use std::fmt;
 use std::mem::MaybeUninit;
 
@@ -1256,8 +1257,13 @@ fn inter_frame_rdo_mode_decision<T: Pixel>(
     };
     mvs_set.push(mvs);
 
+    let prune_zero_mv = fi.config.speed_settings.prediction.prune_zero_mv
+      && (luma_mode == PredictionMode::GLOBALMV
+        || luma_mode == PredictionMode::GLOBAL_GLOBALMV
+        || luma_mode.has_newmv());
+
     // Calculate SATD for each mode
-    if num_modes_rdo != inter_mode_set.len() {
+    if num_modes_rdo < inter_mode_set.len() || prune_zero_mv {
       let tile_rect = ts.tile_rect();
       let rec = &mut ts.rec.planes[0];
       let po = tile_bo.plane_offset(rec.plane_cfg);
@@ -1297,7 +1303,32 @@ fn inter_frame_rdo_mode_decision<T: Pixel>(
 
   let mut sorted =
     izip!(inter_mode_set, mvs_set, satds).collect::<ArrayVec<_, 20>>();
-  if num_modes_rdo != sorted.len() {
+
+  if fi.config.speed_settings.prediction.prune_zero_mv {
+    let best_new_mv = sorted
+      .iter()
+      .filter(|((inter_mode, _), _, _)| inter_mode.has_newmv())
+      .max_by_key(|(_, _, satd)| *satd);
+    if let Some((_, _, best_satd)) = best_new_mv {
+      [PredictionMode::GLOBALMV, PredictionMode::GLOBAL_GLOBALMV]
+        .iter()
+        .filter_map(|mode| {
+          let prediction = sorted
+            .iter()
+            .enumerate()
+            .find(|(_, ((inter_mode, _), _, _))| inter_mode == mode);
+          prediction
+            .filter(|(_, (_, _, satd))| *satd < *best_satd)
+            .map(|(i, _)| i)
+        })
+        .sorted_unstable()
+        .rev()
+        .for_each(|idx| {
+          sorted.remove(idx);
+        });
+    }
+  }
+  if num_modes_rdo < sorted.len() {
     sorted.sort_by_key(|((_mode, _i), _mvs, satd)| *satd);
   }
 
