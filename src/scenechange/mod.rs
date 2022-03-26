@@ -8,6 +8,7 @@
 // PATENTS file, you can obtain it at www.aomedia.org/license/patent.
 
 mod fast;
+mod retinex;
 mod standard;
 
 use crate::api::{EncoderConfig, SceneDetectionSpeed};
@@ -16,6 +17,7 @@ use crate::encoder::Sequence;
 use crate::frame::*;
 use crate::me::FrameMEStats;
 use crate::partition::REF_FRAMES;
+use crate::scenechange::retinex::apply_retinex_transform;
 use crate::util::Pixel;
 use rust_hawktracer::*;
 use std::collections::BTreeMap;
@@ -35,6 +37,8 @@ pub struct SceneChangeDetector<T: Pixel> {
   speed_mode: SceneDetectionSpeed,
   /// scaling factor for fast scene detection
   scale_factor: usize,
+  /// Applies retinex masking to enhance contrast in dark scenes
+  dark_enhancement: bool,
   /// Frame buffer for scaled frames
   downscaled_frame_buffer: Option<(
     Box<[Plane<T>; 2]>,
@@ -103,6 +107,7 @@ impl<T: Pixel> SceneChangeDetector<T> {
       threshold,
       speed_mode,
       scale_factor,
+      dark_enhancement: true,
       downscaled_frame_buffer: None,
       frame_me_stats_buffer: None,
       frame_ref_buffer: None,
@@ -171,9 +176,23 @@ impl<T: Pixel> SceneChangeDetector<T> {
     // Running single frame comparison and adding it to deque
     // Decrease deque offset if there is no new frames
     if frame_set.len() > self.deque_offset + 1 {
+      let mut frame1 = Arc::clone(&frame_set[self.deque_offset]);
+      let mut frame2 = Arc::clone(&frame_set[self.deque_offset + 1]);
+      if self.dark_enhancement {
+        frame1 = Arc::new(apply_retinex_transform(
+          &frame1,
+          self.bit_depth,
+          self.sequence.pixel_range,
+        ));
+        frame2 = Arc::new(apply_retinex_transform(
+          &frame2,
+          self.bit_depth,
+          self.sequence.pixel_range,
+        ));
+      }
       self.run_comparison(
-        frame_set[self.deque_offset].clone(),
-        frame_set[self.deque_offset + 1].clone(),
+        frame1,
+        frame2,
         input_frameno + self.deque_offset as u64,
       );
     } else {
@@ -220,11 +239,21 @@ impl<T: Pixel> SceneChangeDetector<T> {
     init_len: usize,
   ) {
     for x in 0..init_len {
-      self.run_comparison(
-        frame_set[x].clone(),
-        frame_set[x + 1].clone(),
-        input_frameno + x as u64,
-      );
+      let mut frame1 = Arc::clone(&frame_set[x]);
+      let mut frame2 = Arc::clone(&frame_set[x + 1]);
+      if self.dark_enhancement {
+        frame1 = Arc::new(apply_retinex_transform(
+          &frame1,
+          self.bit_depth,
+          self.sequence.pixel_range,
+        ));
+        frame2 = Arc::new(apply_retinex_transform(
+          &frame2,
+          self.bit_depth,
+          self.sequence.pixel_range,
+        ));
+      }
+      self.run_comparison(frame1, frame2, input_frameno + x as u64);
     }
   }
 
