@@ -52,6 +52,7 @@ impl ActivityMask {
         variances.push(variance);
       }
     }
+
     ActivityMask { variances: variances.into_boxed_slice() }
   }
 
