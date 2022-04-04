@@ -292,7 +292,7 @@ pub(crate) mod rust {
   #[inline(never)]
   pub fn cdef_dist_kernel<T: Pixel>(
     src: &PlaneRegion<'_, T>, dst: &PlaneRegion<'_, T>, w: usize, h: usize,
-    bit_depth: usize, _cpu: CpuFeatureLevel,
+    aq_var: Option<u32>, bit_depth: usize, _cpu: CpuFeatureLevel,
   ) -> u32 {
     // TODO: Investigate using different constants in ssim boost for block sizes
     // smaller than 8x8.
@@ -361,7 +361,7 @@ pub(crate) mod rust {
     dvar =
       ((dvar as u64 * div + (1 << scale_shift >> 1)) >> scale_shift) as u32;
 
-    apply_ssim_boost(sse, svar, dvar, bit_depth)
+    apply_ssim_boost(sse, svar, dvar, aq_var, bit_depth)
   }
 }
 

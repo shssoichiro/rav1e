@@ -16,7 +16,12 @@ use rust_hawktracer::*;
 
 #[derive(Debug, Default, Clone)]
 pub struct ActivityMask {
-  variances: Box<[u32]>,
+  pub variances: Box<[u32]>,
+  pub segments: Box<[u8]>,
+  pub w_in_imp_b: usize,
+  pub seg_bins: [usize; 8],
+  pub avg_var: f64,
+  pub var_scale: f64,
 }
 
 impl ActivityMask {
@@ -52,7 +57,36 @@ impl ActivityMask {
         variances.push(variance);
       }
     }
-    ActivityMask { variances: variances.into_boxed_slice() }
+
+    let tot_bins = variances.len();
+    let max_var = variances.iter().fold(0u32, |acc, &var| acc.max(var)) as f64;
+    let avg_var = variances.iter().copied().map(u64::from).sum::<u64>() as f64
+      / tot_bins as f64
+      / max_var
+      * 7.0;
+    let var_scale = max_var / 7.0;
+
+    let mut seg_bins = [0usize; 8];
+    let mut segments = Vec::with_capacity(variances.len());
+    for var in &variances {
+      let segment = clamp((*var) as f64 / max_var, 0f64, 1f64) * 7.0;
+      let segment = segment.round() as u8;
+      segments.push(segment);
+      // SAFETY: We know from the clamping above that `segment` will be between 0..=7.
+      // Avoiding the bounds check here eliminates a jump and allows better loop unrolling.
+      unsafe {
+        *seg_bins.get_unchecked_mut(segment as usize) += 1;
+      }
+    }
+
+    ActivityMask {
+      variances: variances.into_boxed_slice(),
+      segments: segments.into_boxed_slice(),
+      w_in_imp_b,
+      seg_bins,
+      avg_var,
+      var_scale,
+    }
   }
 
   #[hawktracer(activity_mask_fill_scales)]
@@ -151,6 +185,7 @@ pub fn ssim_boost(svar: u32, dvar: u32, bit_depth: usize) -> DistortionScale {
     DistortionScale::default().0,
     svar,
     dvar,
+    None,
     bit_depth,
   ))
 }
@@ -158,13 +193,17 @@ pub fn ssim_boost(svar: u32, dvar: u32, bit_depth: usize) -> DistortionScale {
 /// Apply ssim boost to a given input
 #[inline(always)]
 pub fn apply_ssim_boost(
-  input: u32, svar: u32, dvar: u32, bit_depth: usize,
+  input: u32, svar: u32, dvar: u32, aq_var: Option<u32>, bit_depth: usize,
 ) -> u32 {
   let coeff_shift = bit_depth - 8;
 
-  // Scale dvar and svar to lbd range to prevent overflows.
+  // Scale variances to lbd range to prevent overflows.
+  let aq_var = aq_var.map(|var| (var >> (2 * coeff_shift)) as u64);
   let svar = (svar >> (2 * coeff_shift)) as u64;
-  let dvar = (dvar >> (2 * coeff_shift)) as u64;
+  let mut dvar = (dvar >> (2 * coeff_shift)) as u64;
+  if let Some(aq_var) = aq_var {
+    dvar = (dvar + aq_var) / 2;
+  }
 
   // The two constants were tuned for CDEF, but can probably be better tuned
   //   for use in general RDO
@@ -195,7 +234,13 @@ mod ssim_boost_tests {
     let max_pix_diff = (1 << 12) - 1;
     let max_pix_sse = max_pix_diff * max_pix_diff;
     let max_variance = max_pix_diff * 8 * 8 / 4;
-    apply_ssim_boost(max_pix_sse * 8 * 8, max_variance, max_variance, 12);
+    apply_ssim_boost(
+      max_pix_sse * 8 * 8,
+      max_variance,
+      max_variance,
+      None,
+      12,
+    );
   }
 
   /// Floating point reference version of `ssim_boost`
@@ -229,8 +274,8 @@ mod ssim_boost_tests {
         let dvar = rng.gen_range(0..(1 << scale));
 
         let float = reference_ssim_boost(svar, dvar, 12);
-        let fixed =
-          apply_ssim_boost(1 << 23, svar, dvar, 12) as f64 / (1 << 23) as f64;
+        let fixed = apply_ssim_boost(1 << 23, svar, dvar, None, 12) as f64
+          / (1 << 23) as f64;
 
         // Compare the two versions
         max_relative_error =

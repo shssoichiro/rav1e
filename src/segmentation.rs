@@ -7,7 +7,11 @@
 // Media Patent License 1.0 was not distributed with this source code in the
 // PATENTS file, you can obtain it at www.aomedia.org/license/patent.
 
+use std::cmp::Ordering;
+
 use crate::context::*;
+use crate::encoder::Tune;
+use crate::encoder::IMPORTANCE_BLOCK_SIZE;
 use crate::header::PRIMARY_REF_NONE;
 use crate::partition::BlockSize;
 use crate::tiling::TileStateMut;
@@ -31,40 +35,27 @@ pub fn segmentation_optimize<T: Pixel>(
       return;
     }
 
-    // A series of AWCY runs with deltas 13, 15, 17, 18, 19, 20, 21, 22, 23
-    // showed this to be the optimal one.
-    const TEMPORAL_RDO_QI_DELTA: i16 = 21;
-
     // Avoid going into lossless mode by never bringing qidx below 1.
     // Because base_q_idx changes more frequently than the segmentation
     // data, it is still possible for a segment to enter lossless, so
     // enforcement elsewhere is needed.
     let offset_lower_limit = 1 - fi.base_q_idx as i16;
 
-    // Fill in 3 slots with 0, delta, -delta. The slot IDs are also used in
-    // luma_chroma_mode_rdo() so if you change things here make sure to check
-    // that place too.
-    for i in 0..3 {
-      fs.segmentation.features[i][SegLvl::SEG_LVL_ALT_Q as usize] = true;
-      fs.segmentation.data[i][SegLvl::SEG_LVL_ALT_Q as usize] = match i {
-        0 => 0,
-        1 => TEMPORAL_RDO_QI_DELTA,
-        2 => (-TEMPORAL_RDO_QI_DELTA).max(offset_lower_limit),
-        _ => unreachable!(),
-      };
+    if fi.config.tune == Tune::Psychovisual {
+      segmentation_optimize_aq(fi, fs, offset_lower_limit);
+    } else {
+      segmentation_optimize_no_aq(fs, offset_lower_limit);
     }
 
     /* Figure out parameters */
     fs.segmentation.preskip = false;
     fs.segmentation.last_active_segid = 0;
-    if fs.segmentation.enabled {
-      for i in 0..8 {
-        for j in 0..SegLvl::SEG_LVL_MAX as usize {
-          if fs.segmentation.features[i][j] {
-            fs.segmentation.last_active_segid = i as u8;
-            if j >= SegLvl::SEG_LVL_REF_FRAME as usize {
-              fs.segmentation.preskip = true;
-            }
+    for i in 0..8 {
+      for j in 0..SegLvl::SEG_LVL_MAX as usize {
+        if fs.segmentation.features[i][j] {
+          fs.segmentation.last_active_segid = i as u8;
+          if j >= SegLvl::SEG_LVL_REF_FRAME as usize {
+            fs.segmentation.preskip = true;
           }
         }
       }
@@ -72,9 +63,174 @@ pub fn segmentation_optimize<T: Pixel>(
   }
 }
 
+fn segmentation_optimize_aq<T: Pixel>(
+  fi: &FrameInvariants<T>, fs: &mut FrameState<T>, offset_lower_limit: i16,
+) {
+  const AQ_MULT: f64 = -9.0;
+
+  let coded_data = fi.coded_frame_data.as_ref().unwrap();
+  let avg_var = coded_data.activity_mask.avg_var;
+  let mut seg_bins = coded_data.activity_mask.seg_bins;
+  let threshold = coded_data.activity_mask.variances.len() / 6;
+
+  let mut num_neg = 0usize;
+  let mut num_pos = 0usize;
+
+  let mut tmp_delta = [0f64; 8];
+  for i in 0..8 {
+    tmp_delta[i] = (avg_var.ceil() - (i as f64)) * AQ_MULT;
+    num_pos += (tmp_delta[i] > 0f64) as usize;
+    num_neg += (tmp_delta[i] < 0f64) as usize;
+  }
+
+  let mut remap_segment_tab: [usize; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+  let mut num_segments = 8;
+
+  loop {
+    let mut changed = false;
+
+    if num_segments < 4 {
+      break;
+    }
+
+    for i in 0..8 {
+      if seg_bins[remap_segment_tab[i]] >= threshold {
+        continue;
+      };
+      if seg_bins[remap_segment_tab[i]] == 0 {
+        continue;
+      }; /* Already eliminated */
+
+      let prev_id = remap_segment_tab[i];
+
+      #[derive(Debug, Default, Clone, Copy)]
+      struct ScoreTab {
+        idx: usize,
+        score: f64,
+      }
+      let mut s_array =
+        [ScoreTab { idx: usize::max_value(), score: std::f64::MAX }; 8];
+
+      for j in 0..8 {
+        s_array[j].idx = remap_segment_tab[j];
+        if (remap_segment_tab[j] == prev_id)
+          || (seg_bins[remap_segment_tab[j]] == 0)
+          || (((num_neg < 2) || (num_pos < 2))
+            && (tmp_delta[remap_segment_tab[j]].signum()
+              != tmp_delta[prev_id].signum()))
+        {
+          s_array[j].score = std::f64::MAX;
+        } else {
+          s_array[j].score =
+            (tmp_delta[remap_segment_tab[j]] - tmp_delta[prev_id]).abs();
+        }
+      }
+
+      s_array.sort_by(|a, b| {
+        (a.score).partial_cmp(&b.score).unwrap_or(Ordering::Less)
+      });
+
+      if s_array[0].score == std::f64::MAX {
+        continue;
+      }
+
+      /* Remap any old mappings to the current segment as well */
+      for j in 0..8 {
+        if remap_segment_tab[j] == prev_id {
+          remap_segment_tab[j] = s_array[0].idx;
+        }
+      }
+
+      let num_2bins = seg_bins[remap_segment_tab[i]] + seg_bins[prev_id];
+      let mut ratio_new =
+        (seg_bins[remap_segment_tab[i]] as f64) / (num_2bins as f64);
+      let mut ratio_old = (seg_bins[prev_id] as f64) / (num_2bins as f64);
+
+      ratio_new *= tmp_delta[remap_segment_tab[i]];
+      ratio_old *= tmp_delta[prev_id];
+
+      num_pos -= (tmp_delta[prev_id] > 0f64) as usize;
+      num_neg -= (tmp_delta[prev_id] < 0f64) as usize;
+
+      tmp_delta[remap_segment_tab[i]] = ratio_new + ratio_old;
+      tmp_delta[prev_id] = std::f64::MAX;
+
+      seg_bins[remap_segment_tab[i]] += seg_bins[prev_id];
+      seg_bins[prev_id] = 0;
+
+      num_segments -= 1;
+
+      changed = true;
+      break;
+    }
+
+    if !changed {
+      break;
+    }
+  }
+
+  /* Get all unique values in the intentionally unsorted array (its a LUT) */
+  let mut uniq_array = [0usize; 8];
+  let mut num_segments = 0;
+  for i in 0..8 {
+    let mut seen_match = false;
+    for j in 0..num_segments {
+      if remap_segment_tab[i] == uniq_array[j] {
+        seen_match = true;
+      }
+    }
+    if !seen_match {
+      uniq_array[num_segments] = remap_segment_tab[i];
+      num_segments += 1;
+    }
+  }
+
+  let mut seg_delta = [0f64; 8];
+  for i in 0..num_segments {
+    /* Collect all used segment deltas into the actual segment map */
+    seg_delta[i] = tmp_delta[uniq_array[i]];
+
+    /* Remap the LUT to make it match the layout of the seg deltaq map */
+    for j in 0..8 {
+      if remap_segment_tab[j] == uniq_array[i] {
+        remap_segment_tab[j] = i;
+      }
+    }
+  }
+
+  fs.segmentation.activity_lut = remap_segment_tab;
+
+  for i in 0..num_segments {
+    fs.segmentation.features[i][SegLvl::SEG_LVL_ALT_Q as usize] = true;
+    fs.segmentation.data[i][SegLvl::SEG_LVL_ALT_Q as usize] =
+      (seg_delta[i].round() as i16).max(offset_lower_limit);
+  }
+}
+
+fn segmentation_optimize_no_aq<T: Pixel>(
+  fs: &mut FrameState<T>, offset_lower_limit: i16,
+) {
+  // A series of AWCY runs with deltas 13, 15, 17, 18, 19, 20, 21, 22, 23
+  // showed this to be the optimal one.
+  const TEMPORAL_RDO_QI_DELTA: i16 = 21;
+
+  // Fill in 3 slots with 0, delta, -delta. The slot IDs are also used in
+  // luma_chroma_mode_rdo() so if you change things here make sure to check
+  // that place too.
+  for i in 0..3 {
+    fs.segmentation.features[i][SegLvl::SEG_LVL_ALT_Q as usize] = true;
+    fs.segmentation.data[i][SegLvl::SEG_LVL_ALT_Q as usize] = match i {
+      0 => 0,
+      1 => TEMPORAL_RDO_QI_DELTA,
+      2 => (-TEMPORAL_RDO_QI_DELTA).max(offset_lower_limit),
+      _ => unreachable!(),
+    };
+  }
+}
+
 pub fn select_segment<T: Pixel>(
   fi: &FrameInvariants<T>, ts: &TileStateMut<'_, T>, tile_bo: TileBlockOffset,
-  bsize: BlockSize, skip: bool,
+  is_chroma_block: bool, bsize: BlockSize, skip: bool,
 ) -> std::ops::RangeInclusive<u8> {
   use crate::api::SegmentationLevel;
   use crate::rdo::spatiotemporal_scale;
@@ -85,6 +241,27 @@ pub fn select_segment<T: Pixel>(
     return 0..=0;
   }
 
+  if fi.config.tune == Tune::Psychovisual {
+    // AQ-based segmentation
+    let plane_cfg = &ts.input.planes[if is_chroma_block { 1 } else { 0 }].cfg;
+    let tile_offset = tile_bo.plane_offset(plane_cfg);
+    let plane_offset = ts.sbo.plane_offset(plane_cfg);
+    let x_in_imp_b = ((tile_offset.x + plane_offset.x) << plane_cfg.xdec)
+      as usize
+      >> IMPORTANCE_BLOCK_SIZE;
+    let y_in_imp_b = ((tile_offset.y + plane_offset.y) << plane_cfg.ydec)
+      as usize
+      >> IMPORTANCE_BLOCK_SIZE;
+    let mask = &fi.coded_frame_data.as_ref().unwrap().activity_mask;
+    let w_in_imp_b = mask.w_in_imp_b;
+    let mut seg = mask.segments[y_in_imp_b * w_in_imp_b + x_in_imp_b];
+    if seg > ts.segmentation.last_active_segid {
+      seg = ts.segmentation.last_active_segid;
+    }
+    return seg..=seg;
+  }
+
+  // Simple segmentation for when AQ is disabled
   let segment_2_is_lossless = fi.base_q_idx as i16
     + ts.segmentation.data[2][SegLvl::SEG_LVL_ALT_Q as usize]
     < 1;

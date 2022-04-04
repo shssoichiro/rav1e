@@ -853,7 +853,7 @@ impl<T: Pixel> ContextInner<T> {
     {
       self
         .compute_lookahead_motion_vectors(self.next_lookahead_output_frameno);
-      if self.config.temporal_rdo() {
+      if self.config.need_psy_lookahead_data() {
         self.compute_lookahead_intra_costs(self.next_lookahead_output_frameno);
       }
       self.next_lookahead_output_frameno += 1;
@@ -1437,7 +1437,7 @@ impl<T: Pixel> ContextInner<T> {
       return Err(EncoderStatus::LimitReached);
     }
 
-    if self.config.temporal_rdo() {
+    if self.config.need_psy_lookahead_data() {
       // Compute the block importances for the current output frame.
       self.compute_block_importances();
     }

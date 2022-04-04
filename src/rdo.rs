@@ -10,6 +10,7 @@
 
 #![allow(non_camel_case_types)]
 
+use crate::activity::ActivityMask;
 use crate::api::*;
 use crate::cdef::*;
 use crate::context::*;
@@ -140,7 +141,8 @@ pub fn estimate_rate(qindex: u8, ts: TxSize, fast_distortion: u64) -> u64 {
 #[allow(unused)]
 pub fn cdef_dist_wxh<T: Pixel, F: Fn(Area, BlockSize) -> DistortionScale>(
   src1: &PlaneRegion<'_, T>, src2: &PlaneRegion<'_, T>, w: usize, h: usize,
-  bit_depth: usize, compute_bias: F, cpu: CpuFeatureLevel,
+  bit_depth: usize, compute_bias: F, activity_mask: Option<&ActivityMask>,
+  cpu: CpuFeatureLevel,
 ) -> Distortion {
   debug_assert!(src1.plane_cfg.xdec == 0);
   debug_assert!(src1.plane_cfg.ydec == 0);
@@ -159,6 +161,10 @@ pub fn cdef_dist_wxh<T: Pixel, F: Fn(Area, BlockSize) -> DistortionScale>(
         &src2.subregion(area),
         kernel_w,
         kernel_h,
+        activity_mask.map(|mask| {
+          mask.variances[(src1.rect().y as usize + y) / 8 * mask.w_in_imp_b
+            + (src1.rect().x as usize + x) / 8]
+        }),
         bit_depth,
         cpu,
       ) as u64);
@@ -283,6 +289,11 @@ fn compute_distortion<T: Pixel>(
           input_region.subregion(bias_area).frame_block_offset(),
           bsize,
         )
+      },
+      if fi.config.tune == Tune::Psychovisual {
+        Some(&fi.coded_frame_data.as_ref().unwrap().activity_mask)
+      } else {
+        None
       },
       fi.cpu_feature_level,
     ),
@@ -804,7 +815,7 @@ fn luma_chroma_mode_rdo<T: Pixel>(
 
     let mut zero_distortion = false;
 
-    for sidx in select_segment(fi, ts, tile_bo, bsize, skip) {
+    for sidx in select_segment(fi, ts, tile_bo, is_chroma_block, bsize, skip) {
       cw.bc.blocks.set_segmentation_idx(tile_bo, bsize, sidx);
 
       let (tx_size, tx_type) = rdo_tx_size_type(
@@ -2010,6 +2021,7 @@ fn rdo_loop_plane_error<T: Pixel>(
             &test_region,
             8,
             8,
+            None,
             fi.sequence.bit_depth,
             fi.cpu_feature_level,
           ) as u64)

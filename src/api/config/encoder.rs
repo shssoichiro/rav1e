@@ -215,6 +215,12 @@ impl EncoderConfig {
     // might be bigger than 8x8. So temporal RDO is always disabled in that case.
     !self.speed_settings.transform.tx_domain_distortion
   }
+
+  /// Whether we should build data such as lookahead intra costs and block importances.
+  #[inline]
+  pub fn need_psy_lookahead_data(&self) -> bool {
+    self.temporal_rdo() || self.tune == Tune::Psychovisual
+  }
 }
 
 impl fmt::Display for EncoderConfig {
