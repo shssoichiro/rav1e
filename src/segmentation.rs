@@ -248,10 +248,10 @@ pub fn select_segment<T: Pixel>(
     let plane_offset = ts.sbo.plane_offset(plane_cfg);
     let x_in_imp_b = ((tile_offset.x + plane_offset.x) << plane_cfg.xdec)
       as usize
-      >> IMPORTANCE_BLOCK_SIZE;
+      / IMPORTANCE_BLOCK_SIZE;
     let y_in_imp_b = ((tile_offset.y + plane_offset.y) << plane_cfg.ydec)
       as usize
-      >> IMPORTANCE_BLOCK_SIZE;
+      / IMPORTANCE_BLOCK_SIZE;
     let mask = &fi.coded_frame_data.as_ref().unwrap().activity_mask;
     let w_in_imp_b = mask.w_in_imp_b;
     let mut seg = mask.segments[y_in_imp_b * w_in_imp_b + x_in_imp_b];
