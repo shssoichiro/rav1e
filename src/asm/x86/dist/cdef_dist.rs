@@ -47,7 +47,7 @@ extern {
 #[allow(clippy::let_and_return)]
 pub fn cdef_dist_kernel<T: Pixel>(
   src: &PlaneRegion<'_, T>, dst: &PlaneRegion<'_, T>, w: usize, h: usize,
-  aq_var: Option<u32>, bit_depth: usize, cpu: CpuFeatureLevel,
+  bit_depth: usize, cpu: CpuFeatureLevel,
 ) -> u32 {
   debug_assert!(src.plane_cfg.xdec == 0);
   debug_assert!(src.plane_cfg.ydec == 0);
@@ -58,9 +58,8 @@ pub fn cdef_dist_kernel<T: Pixel>(
   debug_assert!(w <= 8);
   debug_assert!(h <= 8);
 
-  let call_rust = || -> u32 {
-    rust::cdef_dist_kernel(dst, src, w, h, aq_var, bit_depth, cpu)
-  };
+  let call_rust =
+    || -> u32 { rust::cdef_dist_kernel(dst, src, w, h, bit_depth, cpu) };
   #[cfg(feature = "check_asm")]
   let ref_dist = call_rust();
 
@@ -93,7 +92,7 @@ pub fn cdef_dist_kernel<T: Pixel>(
   let dvar = ret_buf[1];
   let sse = ret_buf[2];
 
-  let dist = apply_ssim_boost(sse, svar, dvar, aq_var, bit_depth);
+  let dist = apply_ssim_boost(sse, svar, dvar, bit_depth);
   #[cfg(feature = "check_asm")]
   assert_eq!(
     dist, ref_dist,
@@ -237,7 +236,6 @@ pub mod test {
           &dst_region,
           w,
           h,
-          None,
           bd,
           CpuFeatureLevel::default(),
         );
@@ -247,7 +245,6 @@ pub mod test {
           &dst_region,
           w,
           h,
-          None,
           bd,
           CpuFeatureLevel::default(),
         );

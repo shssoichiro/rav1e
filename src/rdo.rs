@@ -161,10 +161,6 @@ pub fn cdef_dist_wxh<T: Pixel, F: Fn(Area, BlockSize) -> DistortionScale>(
         &src2.subregion(area),
         kernel_w,
         kernel_h,
-        activity_mask.map(|mask| {
-          mask.variances[(src1.rect().y as usize + y) / 8 * mask.w_in_imp_b
-            + (src1.rect().x as usize + x) / 8]
-        }),
         bit_depth,
         cpu,
       ) as u64);
@@ -2021,7 +2017,6 @@ fn rdo_loop_plane_error<T: Pixel>(
             &test_region,
             8,
             8,
-            None,
             fi.sequence.bit_depth,
             fi.cpu_feature_level,
           ) as u64)

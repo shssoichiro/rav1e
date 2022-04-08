@@ -185,7 +185,6 @@ pub fn ssim_boost(svar: u32, dvar: u32, bit_depth: usize) -> DistortionScale {
     DistortionScale::default().0,
     svar,
     dvar,
-    None,
     bit_depth,
   ))
 }
@@ -193,17 +192,13 @@ pub fn ssim_boost(svar: u32, dvar: u32, bit_depth: usize) -> DistortionScale {
 /// Apply ssim boost to a given input
 #[inline(always)]
 pub fn apply_ssim_boost(
-  input: u32, svar: u32, dvar: u32, aq_var: Option<u32>, bit_depth: usize,
+  input: u32, svar: u32, dvar: u32, bit_depth: usize,
 ) -> u32 {
   let coeff_shift = bit_depth - 8;
 
   // Scale variances to lbd range to prevent overflows.
-  let aq_var = aq_var.map(|var| (var >> (2 * coeff_shift)) as u64);
   let svar = (svar >> (2 * coeff_shift)) as u64;
-  let mut dvar = (dvar >> (2 * coeff_shift)) as u64;
-  if let Some(aq_var) = aq_var {
-    dvar = (dvar + aq_var) / 2;
-  }
+  let dvar = (dvar >> (2 * coeff_shift)) as u64;
 
   // The two constants were tuned for CDEF, but can probably be better tuned
   //   for use in general RDO
@@ -234,13 +229,7 @@ mod ssim_boost_tests {
     let max_pix_diff = (1 << 12) - 1;
     let max_pix_sse = max_pix_diff * max_pix_diff;
     let max_variance = max_pix_diff * 8 * 8 / 4;
-    apply_ssim_boost(
-      max_pix_sse * 8 * 8,
-      max_variance,
-      max_variance,
-      None,
-      12,
-    );
+    apply_ssim_boost(max_pix_sse * 8 * 8, max_variance, max_variance, 12);
   }
 
   /// Floating point reference version of `ssim_boost`
@@ -274,8 +263,8 @@ mod ssim_boost_tests {
         let dvar = rng.gen_range(0..(1 << scale));
 
         let float = reference_ssim_boost(svar, dvar, 12);
-        let fixed = apply_ssim_boost(1 << 23, svar, dvar, None, 12) as f64
-          / (1 << 23) as f64;
+        let fixed =
+          apply_ssim_boost(1 << 23, svar, dvar, 12) as f64 / (1 << 23) as f64;
 
         // Compare the two versions
         max_relative_error =
