@@ -10,7 +10,6 @@
 
 #![allow(non_camel_case_types)]
 
-use crate::activity::ActivityMask;
 use crate::api::*;
 use crate::cdef::*;
 use crate::context::*;
@@ -141,8 +140,7 @@ pub fn estimate_rate(qindex: u8, ts: TxSize, fast_distortion: u64) -> u64 {
 #[allow(unused)]
 pub fn cdef_dist_wxh<T: Pixel, F: Fn(Area, BlockSize) -> DistortionScale>(
   src1: &PlaneRegion<'_, T>, src2: &PlaneRegion<'_, T>, w: usize, h: usize,
-  bit_depth: usize, compute_bias: F, activity_mask: Option<&ActivityMask>,
-  cpu: CpuFeatureLevel,
+  bit_depth: usize, compute_bias: F, cpu: CpuFeatureLevel,
 ) -> Distortion {
   debug_assert!(src1.plane_cfg.xdec == 0);
   debug_assert!(src1.plane_cfg.ydec == 0);
@@ -285,11 +283,6 @@ fn compute_distortion<T: Pixel>(
           input_region.subregion(bias_area).frame_block_offset(),
           bsize,
         )
-      },
-      if fi.config.tune == Tune::Psychovisual {
-        Some(&fi.coded_frame_data.as_ref().unwrap().activity_mask)
-      } else {
-        None
       },
       fi.cpu_feature_level,
     ),
