@@ -20,8 +20,7 @@ pub struct ActivityMask {
   pub segments: Box<[u8]>,
   pub w_in_imp_b: usize,
   pub seg_bins: [usize; 8],
-  pub avg_var: f64,
-  pub var_scale: f64,
+  pub avg_seg: f64,
 }
 
 impl ActivityMask {
@@ -58,19 +57,18 @@ impl ActivityMask {
       }
     }
 
-    let tot_bins = variances.len();
-    let max_var = variances.iter().fold(0u32, |acc, &var| acc.max(var)) as f64;
-    let avg_var = variances.iter().copied().map(u64::from).sum::<u64>() as f64
-      / tot_bins as f64
-      / max_var
-      * 7.0;
-    let var_scale = max_var / 7.0;
+    let max_var = variances.iter().fold(0u32, |acc, &var| acc.max(var));
+    let max_var_f = max_var as f64;
 
     let mut seg_bins = [0usize; 8];
     let mut segments = Vec::with_capacity(variances.len());
     for var in &variances {
-      let segment = clamp((*var) as f64 / max_var, 0f64, 1f64) * 7.0;
-      let segment = segment.round() as u8;
+      let segment = if *var == max_var {
+        7
+      } else {
+        let segment = clamp((*var) as f64 / max_var_f, 0f64, 1f64) * 8.0;
+        segment.floor() as u8
+      };
       segments.push(segment);
       // SAFETY: We know from the clamping above that `segment` will be between 0..=7.
       // Avoiding the bounds check here eliminates a jump and allows better loop unrolling.
@@ -78,14 +76,20 @@ impl ActivityMask {
         *seg_bins.get_unchecked_mut(segment as usize) += 1;
       }
     }
+    let avg_seg = (seg_bins
+      .iter()
+      .copied()
+      .enumerate()
+      .fold(0, |acc, (i, seg)| acc + (i + 1) * seg) as f64
+      / segments.len() as f64)
+      - 1.0;
 
     ActivityMask {
       variances: variances.into_boxed_slice(),
       segments: segments.into_boxed_slice(),
       w_in_imp_b,
       seg_bins,
-      avg_var,
-      var_scale,
+      avg_seg,
     }
   }
 

@@ -69,7 +69,7 @@ fn segmentation_optimize_aq<T: Pixel>(
   const AQ_MULT: f64 = -9.0;
 
   let coded_data = fi.coded_frame_data.as_ref().unwrap();
-  let avg_var = coded_data.activity_mask.avg_var;
+  let avg_seg = coded_data.activity_mask.avg_seg;
   let mut seg_bins = coded_data.activity_mask.seg_bins;
   let threshold = coded_data.activity_mask.variances.len() / 6;
 
@@ -78,7 +78,7 @@ fn segmentation_optimize_aq<T: Pixel>(
 
   let mut tmp_delta = [0f64; 8];
   for i in 0..8 {
-    tmp_delta[i] = (avg_var.ceil() - (i as f64)) * AQ_MULT;
+    tmp_delta[i] = (avg_seg.ceil() - (i as f64)) * AQ_MULT;
     num_pos += (tmp_delta[i] > 0f64) as usize;
     num_neg += (tmp_delta[i] < 0f64) as usize;
   }
