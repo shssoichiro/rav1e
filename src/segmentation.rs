@@ -19,6 +19,8 @@ use crate::util::Pixel;
 use crate::FrameInvariants;
 use crate::FrameState;
 
+pub const MAX_SEGMENTS: usize = SegLvl::SEG_LVL_MAX as usize;
+
 pub fn segmentation_optimize<T: Pixel>(
   fi: &FrameInvariants<T>, fs: &mut FrameState<T>,
 ) {
@@ -50,8 +52,8 @@ pub fn segmentation_optimize<T: Pixel>(
     /* Figure out parameters */
     fs.segmentation.preskip = false;
     fs.segmentation.last_active_segid = 0;
-    for i in 0..8 {
-      for j in 0..SegLvl::SEG_LVL_MAX as usize {
+    for i in 0..MAX_SEGMENTS {
+      for j in 0..MAX_SEGMENTS {
         if fs.segmentation.features[i][j] {
           fs.segmentation.last_active_segid = i as u8;
           if j >= SegLvl::SEG_LVL_REF_FRAME as usize {
@@ -76,15 +78,15 @@ fn segmentation_optimize_aq<T: Pixel>(
   let mut num_neg = 0usize;
   let mut num_pos = 0usize;
 
-  let mut tmp_delta = [0f64; 8];
-  for i in 0..8 {
+  let mut tmp_delta = [0f64; MAX_SEGMENTS];
+  for i in 0..MAX_SEGMENTS {
     tmp_delta[i] = (avg_seg.ceil() - (i as f64)) * AQ_MULT;
     num_pos += (tmp_delta[i] > 0f64) as usize;
     num_neg += (tmp_delta[i] < 0f64) as usize;
   }
 
-  let mut remap_segment_tab: [usize; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
-  let mut num_segments = 8;
+  let mut remap_segment_tab: [usize; MAX_SEGMENTS] = [0, 1, 2, 3, 4, 5, 6, 7];
+  let mut num_segments = MAX_SEGMENTS;
 
   loop {
     let mut changed = false;
@@ -93,7 +95,7 @@ fn segmentation_optimize_aq<T: Pixel>(
       break;
     }
 
-    for i in 0..8 {
+    for i in 0..MAX_SEGMENTS {
       if seg_bins[remap_segment_tab[i]] >= threshold {
         continue;
       };
@@ -109,9 +111,10 @@ fn segmentation_optimize_aq<T: Pixel>(
         score: f64,
       }
       let mut s_array =
-        [ScoreTab { idx: usize::max_value(), score: std::f64::MAX }; 8];
+        [ScoreTab { idx: usize::max_value(), score: std::f64::MAX };
+          MAX_SEGMENTS];
 
-      for j in 0..8 {
+      for j in 0..MAX_SEGMENTS {
         s_array[j].idx = remap_segment_tab[j];
         if (remap_segment_tab[j] == prev_id)
           || (seg_bins[remap_segment_tab[j]] == 0)
@@ -135,7 +138,7 @@ fn segmentation_optimize_aq<T: Pixel>(
       }
 
       /* Remap any old mappings to the current segment as well */
-      for j in 0..8 {
+      for j in 0..MAX_SEGMENTS {
         if remap_segment_tab[j] == prev_id {
           remap_segment_tab[j] = s_array[0].idx;
         }
@@ -170,9 +173,9 @@ fn segmentation_optimize_aq<T: Pixel>(
   }
 
   /* Get all unique values in the intentionally unsorted array (its a LUT) */
-  let mut uniq_array = [0usize; 8];
+  let mut uniq_array = [0usize; MAX_SEGMENTS];
   let mut num_segments = 0;
-  for i in 0..8 {
+  for i in 0..MAX_SEGMENTS {
     let mut seen_match = false;
     for j in 0..num_segments {
       if remap_segment_tab[i] == uniq_array[j] {
@@ -185,13 +188,13 @@ fn segmentation_optimize_aq<T: Pixel>(
     }
   }
 
-  let mut seg_delta = [0f64; 8];
+  let mut seg_delta = [0f64; MAX_SEGMENTS];
   for i in 0..num_segments {
     /* Collect all used segment deltas into the actual segment map */
     seg_delta[i] = tmp_delta[uniq_array[i]];
 
     /* Remap the LUT to make it match the layout of the seg deltaq map */
-    for j in 0..8 {
+    for j in 0..MAX_SEGMENTS {
       if remap_segment_tab[j] == uniq_array[i] {
         remap_segment_tab[j] = i;
       }

@@ -9,6 +9,7 @@
 
 use crate::frame::*;
 use crate::rdo::DistortionScale;
+use crate::segmentation::MAX_SEGMENTS;
 use crate::tiling::*;
 use crate::util::*;
 use itertools::izip;
@@ -19,7 +20,7 @@ pub struct ActivityMask {
   pub variances: Box<[u32]>,
   pub segments: Box<[u8]>,
   pub w_in_imp_b: usize,
-  pub seg_bins: [usize; 8],
+  pub seg_bins: [usize; MAX_SEGMENTS],
   pub avg_seg: f64,
 }
 
@@ -59,11 +60,14 @@ impl ActivityMask {
 
     let max_var = variances.iter().fold(0u32, |acc, &var| acc.max(var)) as f64;
 
-    let mut seg_bins = [0usize; 8];
+    let mut seg_bins = [0usize; MAX_SEGMENTS];
     let mut segments = Vec::with_capacity(variances.len());
     for var in &variances {
-      let segment =
-        clamp((*var as f64 / max_var * 8.0).floor(), 0.0, 7.0) as u8;
+      let segment = clamp(
+        (*var as f64 / max_var * MAX_SEGMENTS as f64).floor(),
+        0.0,
+        (MAX_SEGMENTS - 1) as f64,
+      ) as u8;
       segments.push(segment);
       // SAFETY: We know from the clamping above that `segment` will be between 0..=7.
       // Avoiding the bounds check here eliminates a jump and allows better loop unrolling.
