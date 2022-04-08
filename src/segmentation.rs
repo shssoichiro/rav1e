@@ -68,7 +68,7 @@ pub fn segmentation_optimize<T: Pixel>(
 fn segmentation_optimize_aq<T: Pixel>(
   fi: &FrameInvariants<T>, fs: &mut FrameState<T>, offset_lower_limit: i16,
 ) {
-  const AQ_MULT: f64 = -9.0;
+  const AQ_MULT: f64 = -6.0;
 
   let coded_data = fi.coded_frame_data.as_ref().unwrap();
   let avg_seg = coded_data.activity_mask.avg_seg;
