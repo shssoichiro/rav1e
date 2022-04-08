@@ -57,18 +57,13 @@ impl ActivityMask {
       }
     }
 
-    let max_var = variances.iter().fold(0u32, |acc, &var| acc.max(var));
-    let max_var_f = max_var as f64;
+    let max_var = variances.iter().fold(0u32, |acc, &var| acc.max(var)) as f64;
 
     let mut seg_bins = [0usize; 8];
     let mut segments = Vec::with_capacity(variances.len());
     for var in &variances {
-      let segment = if *var == max_var {
-        7
-      } else {
-        let segment = clamp((*var) as f64 / max_var_f, 0f64, 1f64) * 8.0;
-        segment.floor() as u8
-      };
+      let segment =
+        clamp((*var as f64 / max_var * 8.0).floor(), 0.0, 7.0) as u8;
       segments.push(segment);
       // SAFETY: We know from the clamping above that `segment` will be between 0..=7.
       // Avoiding the bounds check here eliminates a jump and allows better loop unrolling.
