@@ -251,6 +251,7 @@ mod cdef;
 #[doc(hidden)]
 pub mod context;
 mod deblock;
+mod denoise;
 mod encoder;
 mod entropymode;
 mod lrf;

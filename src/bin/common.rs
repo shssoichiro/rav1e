@@ -289,6 +289,14 @@ pub fn parse_cli() -> Result<CliOptions, CliError> {
         .takes_value(true)
         .conflicts_with("PHOTON_NOISE")
     )
+    .arg(
+      Arg::new("DENOISING")
+        .help("Enable spatio-temporal denoising, intended to be used with grain synthesis.\n\
+        Takes a strength value 0-50.\nDefault strength is 1/2 of photon noise strength, \
+        or 4 if a photon noise table is specified.")
+        .long("denoise")
+        .takes_value(true)
+    )
     // MASTERING
     .arg(
       Arg::new("PIXEL_RANGE")
@@ -782,6 +790,7 @@ fn parse_config(matches: &ArgMatches) -> Result<EncoderConfig, CliError> {
     if grain_str > 64 {
       panic!("Film grain strength must be between 0-64");
     }
+    cfg.denoise_strength = grain_str / 2;
     // We have to know the video resolution before we can generate a table,
     // so we must handle that elsewhere.
   } else if let Some(table_file) = matches.value_of("PHOTON_NOISE_TABLE") {
@@ -791,7 +800,16 @@ fn parse_config(matches: &ArgMatches) -> Result<EncoderConfig, CliError> {
       parse_grain_table(&contents).expect("Failed to parse film grain table");
     if !table.is_empty() {
       cfg.film_grain_params = Some(table);
+      cfg.denoise_strength = 4;
     }
+  }
+  if let Some(denoise_str) =
+    matches.value_of("DENOISING").map(|s| s.parse::<u8>().unwrap())
+  {
+    if denoise_str > 50 {
+      panic!("Denoising strength must be between 0-50");
+    }
+    cfg.denoise_strength = denoise_str;
   }
 
   if let Some(frame_rate) = matches.value_of("FRAME_RATE") {
