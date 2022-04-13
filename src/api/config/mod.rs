@@ -18,9 +18,7 @@ use crate::util::Pixel;
 mod encoder;
 pub use encoder::*;
 
-#[cfg(feature = "unstable")]
 mod grain_synth;
-#[cfg(feature = "unstable")]
 pub use grain_synth::*;
 
 mod rate;

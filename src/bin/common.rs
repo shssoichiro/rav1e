@@ -8,7 +8,6 @@
 // PATENTS file, you can obtain it at www.aomedia.org/license/patent.
 
 use crate::error::*;
-#[cfg(feature = "unstable")]
 use crate::grain_synth::parse_grain_table;
 use crate::muxer::{create_muxer, Muxer};
 use crate::stats::MetricsEnabled;
@@ -52,7 +51,6 @@ pub struct CliOptions {
   pub pass2file_name: Option<OsString>,
   pub save_config: Option<String>,
   pub slots: usize,
-  #[cfg(feature = "unstable")]
   pub generate_grain_strength: u8,
 }
 
@@ -276,6 +274,21 @@ pub fn parse_cli() -> Result<CliOptions, CliError> {
         .takes_value(true)
         .default_value("0")
     )
+    .arg(
+      Arg::new("PHOTON_NOISE")
+        .help("Uses grain synthesis to add photon noise to the resulting encode.\n\
+        Takes a strength value 0-64.")
+        .long("photon-noise")
+        .takes_value(true)
+        .conflicts_with("PHOTON_NOISE_TABLE")
+    ).arg(
+    Arg::new("PHOTON_NOISE_TABLE")
+        .help("Uses a film grain table file to apply grain synthesis to the encode.\n\
+          Uses the same table file format as aomenc and svt-av1.")
+        .long("photon-noise-table")
+        .takes_value(true)
+        .conflicts_with("PHOTON_NOISE")
+    )
     // MASTERING
     .arg(
       Arg::new("PIXEL_RANGE")
@@ -421,21 +434,7 @@ pub fn parse_cli() -> Result<CliOptions, CliError> {
         .long("slots")
         .takes_value(true)
         .default_value("0"),
-    ).arg(
-      Arg::new("PHOTON_NOISE")
-        .help("Uses grain synthesis to add photon noise to the resulting encode.\n\
-        Takes a strength value 0-64.")
-        .long("photon-noise")
-        .takes_value(true)
-        .conflicts_with("PHOTON_NOISE_TABLE")
-    ).arg(
-        Arg::new("PHOTON_NOISE_TABLE")
-          .help("Uses a film grain table file to apply grain synthesis to the encode.\n\
-        Uses the same table file format as aomenc and svt-av1.")
-          .long("photon-noise-table")
-          .takes_value(true)
-          .conflicts_with("PHOTON_NOISE")
-      );
+    );
   }
 
   let matches = app.clone().get_matches();
@@ -558,7 +557,6 @@ pub fn parse_cli() -> Result<CliOptions, CliError> {
     pass2file_name: matches.value_of_os("SECOND_PASS").map(|s| s.to_owned()),
     save_config,
     slots,
-    #[cfg(feature = "unstable")]
     generate_grain_strength: matches
       .value_of("PHOTON_NOISE")
       .map(|g| g.parse::<u8>().unwrap())
@@ -776,26 +774,23 @@ fn parse_config(matches: &ArgMatches) -> Result<EncoderConfig, CliError> {
     panic!("Tile columns and rows may not be greater than 64");
   }
 
-  #[cfg(feature = "unstable")]
-  {
-    let grain_str = matches
-      .value_of("PHOTON_NOISE")
-      .map(|g| g.parse::<u8>().unwrap())
-      .unwrap_or(0);
-    if grain_str > 0 {
-      if grain_str > 64 {
-        panic!("Film grain strength must be between 0-64");
-      }
-      // We have to know the video resolution before we can generate a table,
-      // so we must handle that elsewhere.
-    } else if let Some(table_file) = matches.value_of("PHOTON_NOISE_TABLE") {
-      let contents = std::fs::read_to_string(table_file)
-        .expect("Failed to read film grain table file");
-      let table = parse_grain_table(&contents)
-        .expect("Failed to parse film grain table");
-      if !table.is_empty() {
-        cfg.film_grain_params = Some(table);
-      }
+  let grain_str = matches
+    .value_of("PHOTON_NOISE")
+    .map(|g| g.parse::<u8>().unwrap())
+    .unwrap_or(0);
+  if grain_str > 0 {
+    if grain_str > 64 {
+      panic!("Film grain strength must be between 0-64");
+    }
+    // We have to know the video resolution before we can generate a table,
+    // so we must handle that elsewhere.
+  } else if let Some(table_file) = matches.value_of("PHOTON_NOISE_TABLE") {
+    let contents = std::fs::read_to_string(table_file)
+      .expect("Failed to read film grain table file");
+    let table =
+      parse_grain_table(&contents).expect("Failed to parse film grain table");
+    if !table.is_empty() {
+      cfg.film_grain_params = Some(table);
     }
   }
 

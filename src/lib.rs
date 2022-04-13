@@ -309,7 +309,6 @@ pub use crate::api::color;
 
 /// Encoder configuration and settings
 pub mod config {
-  #[cfg(feature = "unstable")]
   pub use crate::api::config::{
     GrainTableParams, GS_NUM_UV_COEFFS, GS_NUM_UV_POINTS, GS_NUM_Y_COEFFS,
     GS_NUM_Y_POINTS,

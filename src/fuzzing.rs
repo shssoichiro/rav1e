@@ -256,7 +256,6 @@ impl Arbitrary for ArbitraryEncoder {
       enable_timing_info: Arbitrary::arbitrary(u)?,
       switch_frame_interval: u.int_in_range(0..=3)?,
       tune: *u.choose(&[Tune::Psnr, Tune::Psychovisual])?,
-      #[cfg(feature = "unstable")]
       film_grain_params: None,
     };
 
@@ -379,7 +378,6 @@ pub fn fuzz_encode_decode<T: Pixel>(p: DecodeTestParameters<T>) {
     p.tile_cols_log2,
     p.tile_rows_log2,
     p.still_picture,
-    #[cfg(feature = "unstable")]
     None,
   );
 }

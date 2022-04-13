@@ -43,7 +43,6 @@ extern crate log;
 mod common;
 mod decoder;
 mod error;
-#[cfg(feature = "unstable")]
 mod grain_synth;
 #[cfg(feature = "serialize")]
 mod kv;
@@ -53,7 +52,6 @@ mod stats;
 use crate::common::*;
 use crate::error::*;
 use crate::stats::*;
-#[cfg(feature = "unstable")]
 use grain_synth::generate_grain_params;
 use rav1e::config::CpuFeatureLevel;
 use rav1e::prelude::*;
@@ -458,7 +456,6 @@ fn run() -> Result<(), error::CliError> {
     cli.enc.time_base = video_info.time_base;
   }
 
-  #[cfg(feature = "unstable")]
   if cli.generate_grain_strength > 0 && cli.enc.film_grain_params.is_none() {
     cli.enc.film_grain_params = Some(vec![generate_grain_params(
       video_info.width as u32,

@@ -10,7 +10,6 @@
 use itertools::*;
 
 use crate::api::color::*;
-#[cfg(feature = "unstable")]
 use crate::api::config::GrainTableParams;
 use crate::api::{Rational, SpeedSettings};
 use crate::encoder::Tune;
@@ -85,7 +84,6 @@ pub struct EncoderConfig {
   /// Metric to tune the quality for.
   pub tune: Tune,
   /// Parameters for grain synthesis.
-  #[cfg(feature = "unstable")]
   pub film_grain_params: Option<Vec<GrainTableParams>>,
   /// Number of tiles horizontally. Must be a power of two.
   ///
@@ -160,7 +158,6 @@ impl EncoderConfig {
       quantizer: 100,
       bitrate: 0,
       tune: Tune::default(),
-      #[cfg(feature = "unstable")]
       film_grain_params: None,
       tile_cols: 0,
       tile_rows: 0,
@@ -233,7 +230,6 @@ impl EncoderConfig {
       .unwrap_or(false)
   }
 
-  #[cfg(feature = "unstable")]
   pub(crate) fn get_film_grain_at(
     &self, timestamp: u64,
   ) -> Option<&GrainTableParams> {
@@ -244,7 +240,6 @@ impl EncoderConfig {
     })
   }
 
-  #[cfg(feature = "unstable")]
   pub(crate) fn get_film_grain_mut_at(
     &mut self, timestamp: u64,
   ) -> Option<&mut GrainTableParams> {
