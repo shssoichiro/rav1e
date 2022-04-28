@@ -11,6 +11,7 @@ use crate::math::*;
 use crate::pixel::*;
 use crate::plane::*;
 use crate::serialize::{Deserialize, Serialize};
+use std::mem::size_of_val;
 
 // One video frame.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -25,36 +26,47 @@ impl<T: Pixel> Frame<T> {
   /// Allocates data for the planes.
   pub fn new_with_padding(
     width: usize, height: usize, chroma_sampling: ChromaSampling,
-    luma_padding: usize,
+    superblock_size: usize, min_padding: usize,
   ) -> Self {
     let luma_width = width.align_power_of_two(3);
     let luma_height = height.align_power_of_two(3);
+    let padding_shift = size_of_val(&superblock_size) * 8
+      - (superblock_size.leading_zeros() + 1) as usize;
+    let luma_x_stride = luma_width.align_power_of_two(padding_shift);
+    let luma_y_stride = luma_height.align_power_of_two(padding_shift);
 
     let (chroma_decimation_x, chroma_decimation_y) =
       chroma_sampling.get_decimation().unwrap_or((0, 0));
     let (chroma_width, chroma_height) =
       chroma_sampling.get_chroma_dimensions(luma_width, luma_height);
-    let chroma_padding_x = luma_padding >> chroma_decimation_x;
-    let chroma_padding_y = luma_padding >> chroma_decimation_y;
+    let chroma_x_stride = chroma_width.align_power_of_two(padding_shift);
+    let chroma_y_stride = chroma_height.align_power_of_two(padding_shift);
 
     Frame {
       planes: [
-        Plane::new(luma_width, luma_height, 0, 0, luma_padding, luma_padding),
         Plane::new(
-          chroma_width,
-          chroma_height,
-          chroma_decimation_x,
-          chroma_decimation_y,
-          chroma_padding_x,
-          chroma_padding_y,
+          luma_width,
+          luma_height,
+          0,
+          0,
+          (luma_x_stride - luma_width).max(min_padding),
+          (luma_y_stride - luma_height).max(min_padding),
         ),
         Plane::new(
           chroma_width,
           chroma_height,
           chroma_decimation_x,
           chroma_decimation_y,
-          chroma_padding_x,
-          chroma_padding_y,
+          (chroma_x_stride - chroma_width).max(min_padding),
+          (chroma_y_stride - chroma_height).max(min_padding),
+        ),
+        Plane::new(
+          chroma_width,
+          chroma_height,
+          chroma_decimation_x,
+          chroma_decimation_y,
+          (chroma_x_stride - chroma_width).max(min_padding),
+          (chroma_y_stride - chroma_height).max(min_padding),
         ),
       ],
     }

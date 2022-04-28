@@ -163,7 +163,7 @@ macro_rules! plane_region_common {
             phantom: PhantomData,
           }
         }
-        assert!(rect.x >= -(cfg.xorigin as isize));
+        assert!(dbg!(rect.x) >= dbg!(-(cfg.xorigin as isize)));
         assert!(rect.y >= -(cfg.yorigin as isize));
         assert!(cfg.xorigin as isize + rect.x + rect.width as isize <= cfg.stride as isize);
         assert!(cfg.yorigin as isize + rect.y + rect.height as isize <= cfg.alloc_height as isize);

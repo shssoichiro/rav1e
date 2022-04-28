@@ -19,8 +19,7 @@ use crate::tiling::*;
 mod plane;
 pub use plane::*;
 
-const FRAME_MARGIN: usize = 16 + SUBPEL_FILTER_SIZE;
-const LUMA_PADDING: usize = SB_SIZE + FRAME_MARGIN;
+const MIN_PADDING: usize = 16 + SUBPEL_FILTER_SIZE;
 
 /// Override the frame type decision
 ///
@@ -63,7 +62,8 @@ impl<T: Pixel> FrameAlloc for Frame<T> {
       width,
       height,
       chroma_sampling,
-      LUMA_PADDING,
+      SB_SIZE,
+      MIN_PADDING,
     )
   }
 }

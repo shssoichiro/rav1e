@@ -270,6 +270,9 @@ impl<T: Pixel> Plane<T> {
       ypad,
       mem::size_of::<T>(),
     );
+    if width == 1920 {
+      dbg!(&cfg);
+    }
     let data = PlaneData::new(cfg.stride * cfg.alloc_height);
 
     Plane { data, cfg }
