@@ -1,4 +1,5 @@
 use crate::api::FrameQueue;
+use crate::util::Aligned;
 use crate::EncoderStatus;
 use arrayvec::ArrayVec;
 use ndarray::{Array3, ArrayView3, ArrayViewMut3};
@@ -8,7 +9,6 @@ use ndrustfft::{
 use std::collections::{BTreeMap, VecDeque};
 use std::f64::consts::PI;
 use std::iter::once;
-use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ptr::copy_nonoverlapping;
 use std::sync::Arc;
@@ -43,10 +43,10 @@ where
   pad_dimensions: ArrayVec<(usize, usize), 3>,
   effective_heights: ArrayVec<usize, 3>,
 
-  hw: [f32; BLOCK_VOLUME],
-  dftgc: [Complex<f32>; COMPLEX_COUNT],
+  hw: Aligned<[f32; BLOCK_VOLUME]>,
+  dftgc: Aligned<[Complex<f32>; COMPLEX_COUNT]>,
   fft: (R2cFftHandler<f32>, FftHandler<f32>, FftHandler<f32>),
-  sigmas: [f32; CCNT2],
+  sigmas: Aligned<[f32; CCNT2]>,
 
   // This stores a copy of the unfiltered previous frame,
   // since in `frame_q` it will be filtered already.
@@ -55,8 +55,6 @@ where
   // code changes.
   frame_buffer: VecDeque<Arc<Frame<T>>>,
   pub(crate) cur_frameno: u64,
-
-  _t: PhantomData<T>,
 }
 
 impl<T> DftDenoiser<T>
@@ -95,8 +93,8 @@ where
       effective_heights.push(e_h);
     }
 
-    let hw = Self::create_window();
-    let mut dftgr = [0f32; BLOCK_VOLUME];
+    let hw = Aligned::new(Self::create_window());
+    let mut dftgr = Aligned::new([0f32; BLOCK_VOLUME]);
 
     let fft = (
       R2cFftHandler::new(SB_SIZE),
@@ -111,7 +109,7 @@ where
     }
     let wscale = 1.0 / wscale;
 
-    let mut sigmas = [0f32; CCNT2];
+    let mut sigmas = Aligned::new([0f32; CCNT2]);
     sigmas.fill(sigma / wscale);
 
     let mut denoiser = DftDenoiser {
@@ -124,13 +122,12 @@ where
       hw,
       fft,
       sigmas,
-      dftgc: [Complex::default(); COMPLEX_COUNT],
+      dftgc: Aligned::new([Complex::default(); COMPLEX_COUNT]),
       frame_buffer: VecDeque::with_capacity(TB_MIDPOINT),
       cur_frameno: 0,
-      _t: PhantomData::<T>::default(),
     };
 
-    let mut dftgc = [Complex::default(); COMPLEX_COUNT];
+    let mut dftgc = Aligned::new([Complex::default(); COMPLEX_COUNT]);
     denoiser.real_to_complex_3d(&dftgr, &mut dftgc);
     denoiser.dftgc = dftgc;
 
