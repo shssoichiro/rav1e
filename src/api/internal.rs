@@ -11,7 +11,6 @@
 use crate::activity::ActivityMask;
 use crate::api::lookahead::*;
 use crate::api::{EncoderConfig, EncoderStatus, FrameType, Opaque, Packet};
-use crate::color::ChromaSampling::Cs400;
 use crate::cpu_features::CpuFeatureLevel;
 use crate::dist::get_satd;
 use crate::encoder::*;
@@ -313,30 +312,8 @@ impl<T: Pixel> ContextInner<T> {
 
   #[hawktracer(send_frame)]
   pub fn send_frame(
-    &mut self, mut frame: Option<Arc<Frame<T>>>,
-    params: Option<FrameParameters>,
+    &mut self, frame: Option<Arc<Frame<T>>>, params: Option<FrameParameters>,
   ) -> Result<(), EncoderStatus> {
-    if let Some(ref mut frame) = frame {
-      use crate::api::color::ChromaSampling;
-      let EncoderConfig { width, height, chroma_sampling, .. } = *self.config;
-      let planes =
-        if chroma_sampling == ChromaSampling::Cs400 { 1 } else { 3 };
-      // Try to add padding
-      if let Some(ref mut frame) = Arc::get_mut(frame) {
-        for plane in frame.planes[..planes].iter_mut() {
-          plane.pad(width, height);
-        }
-      }
-      // Enforce that padding is added
-      for (p, plane) in frame.planes[..planes].iter().enumerate() {
-        assert!(
-          plane.probe_padding(width, height),
-          "Plane {} was not padded before passing Frame to send_frame().",
-          p
-        );
-      }
-    }
-
     let input_frameno = self.frame_count;
     let is_flushing = frame.is_none();
     if !is_flushing {
@@ -1338,15 +1315,6 @@ impl<T: Pixel> ContextInner<T> {
         false,
       );
       self.packet_data.extend(data);
-
-      let planes =
-        if frame_data.fi.sequence.chroma_sampling == Cs400 { 1 } else { 3 };
-
-      Arc::get_mut(&mut frame_data.fs.rec).unwrap().pad(
-        frame_data.fi.width,
-        frame_data.fi.height,
-        planes,
-      );
 
       let (rec, source) = if frame_data.fi.show_frame {
         (Some(frame_data.fs.rec.clone()), Some(frame_data.fs.input.clone()))

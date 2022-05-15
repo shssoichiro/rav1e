@@ -68,19 +68,6 @@ impl<T: Pixel> FrameAlloc for Frame<T> {
   }
 }
 
-/// Public Trait for calculating Padding
-pub(crate) trait FramePad {
-  fn pad(&mut self, w: usize, h: usize, planes: usize);
-}
-
-impl<T: Pixel> FramePad for Frame<T> {
-  fn pad(&mut self, w: usize, h: usize, planes: usize) {
-    for pli in 0..planes {
-      self.planes[pli].pad(w, h);
-    }
-  }
-}
-
 /// Public Trait for new Tile of a frame
 pub(crate) trait AsTile<T: Pixel> {
   fn as_tile(&self) -> Tile<'_, T>;

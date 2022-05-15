@@ -316,69 +316,6 @@ impl<T: Pixel> Plane<T> {
     }
   }
 
-  pub fn pad(&mut self, w: usize, h: usize) {
-    let xorigin = self.cfg.xorigin;
-    let yorigin = self.cfg.yorigin;
-    let stride = self.cfg.stride;
-    let alloc_height = self.cfg.alloc_height;
-    let width = (w + self.cfg.xdec) >> self.cfg.xdec;
-    let height = (h + self.cfg.ydec) >> self.cfg.ydec;
-
-    if xorigin > 0 {
-      for y in 0..height {
-        let base = (yorigin + y) * stride;
-        let fill_val = self.data[base + xorigin];
-        for val in &mut self.data[base..base + xorigin] {
-          *val = fill_val;
-        }
-      }
-    }
-
-    if xorigin + width < stride {
-      for y in 0..height {
-        let base = (yorigin + y) * stride + xorigin + width;
-        let fill_val = self.data[base - 1];
-        for val in &mut self.data[base..base + stride - (xorigin + width)] {
-          *val = fill_val;
-        }
-      }
-    }
-
-    if yorigin > 0 {
-      let (top, bottom) = self.data.split_at_mut(yorigin * stride);
-      let src = &bottom[..stride];
-      for y in 0..yorigin {
-        let dst = &mut top[y * stride..(y + 1) * stride];
-        dst.copy_from_slice(src);
-      }
-    }
-
-    if yorigin + height < self.cfg.alloc_height {
-      let (top, bottom) = self.data.split_at_mut((yorigin + height) * stride);
-      let src = &top[(yorigin + height - 1) * stride..];
-      for y in 0..alloc_height - (yorigin + height) {
-        let dst = &mut bottom[y * stride..(y + 1) * stride];
-        dst.copy_from_slice(src);
-      }
-    }
-  }
-
-  /// Minimally test that the plane has been padded.
-  pub fn probe_padding(&self, w: usize, h: usize) -> bool {
-    let PlaneConfig {
-      xorigin, yorigin, stride, alloc_height, xdec, ydec, ..
-    } = self.cfg;
-    let width = (w + xdec) >> xdec;
-    let height = (h + ydec) >> ydec;
-    let corner = (yorigin + height - 1) * stride + xorigin + width - 1;
-    let corner_value = self.data[corner];
-
-    self.data[(yorigin + height) * stride - 1] == corner_value
-      && self.data[(alloc_height - 1) * stride + xorigin + width - 1]
-        == corner_value
-      && self.data[alloc_height * stride - 1] == corner_value
-  }
-
   pub fn slice(&self, po: PlaneOffset) -> PlaneSlice<'_, T> {
     PlaneSlice { plane: self, x: po.x, y: po.y }
   }
@@ -532,9 +469,7 @@ impl<T: Pixel> Plane<T> {
   /// # Panics
   ///
   /// - If the requested width and height are > half the input width or height
-  pub fn downsampled(
-    &self, frame_width: usize, frame_height: usize,
-  ) -> Plane<T> {
+  pub fn downsampled(&self) -> Plane<T> {
     let src = self;
     // SAFETY: all pixels initialized in this function
     let mut new = unsafe {
@@ -580,7 +515,6 @@ impl<T: Pixel> Plane<T> {
         *dst = T::cast_from(avg);
       }
     }
-    new.pad(frame_width, frame_height);
     new
   }
 
@@ -1030,7 +964,7 @@ pub mod test {
         yorigin: 3,
       },
     };
-    let downsampled = plane.downsampled(4, 4);
+    let downsampled = plane.downsampled();
 
     #[rustfmt::skip]
     let expected = &[
@@ -1070,7 +1004,7 @@ pub mod test {
         yorigin: 3,
       },
     };
-    let downsampled = plane.downsampled(3, 3);
+    let downsampled = plane.downsampled();
 
     #[rustfmt::skip]
     let expected = &[
