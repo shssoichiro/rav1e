@@ -88,7 +88,7 @@ cglobal sad_plane_8bpc, 5, 9, 9, p1, p2, stride, width, rows, \
                       resid_simd, resid, width_unrll, skip_ptr
 
   sub     resid_simdq, widthq
-  ; need to multiply by mmsize to load skip pointer
+  ; need to divide by mmsize to load skip pointer
   shr     resid_simdq, ilog2(mmsize)
 %if mmsize == 32
   %define jmp_table jmp_table_avx2
@@ -97,7 +97,7 @@ cglobal sad_plane_8bpc, 5, 9, 9, p1, p2, stride, width, rows, \
 %endif
   lea     skip_ptrq, [jmp_table]
   mov     skip_ptrq, [skip_ptrq + 8*resid_simdq]
-  ; shift back (for residual)
+  ; shift back (for residual to load correct number of bytes)
   shl     resid_simdq, ilog2(mmsize)
   ; set pointer to point after end of width of first row
   add     p1q, widthq
