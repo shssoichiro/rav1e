@@ -48,14 +48,13 @@ pub(crate) fn sad_plane_internal<T: Pixel>(
           // FIXME: Remove `allow` once https://github.com/rust-lang/rust-clippy/issues/8264 fixed
           #[allow(clippy::undocumented_unsafe_blocks)]
           unsafe {
-            let result =
-              $func(
-                mem::transmute(src.data_origin().as_ptr()),
-                mem::transmute(dst.data_origin().as_ptr()),
-                src.cfg.stride,
-                src.cfg.width,
-                src.cfg.height,
-              ) as u64;
+            let result = $func(
+              mem::transmute(src.data_origin().as_ptr()),
+              mem::transmute(dst.data_origin().as_ptr()),
+              src.cfg.stride,
+              src.cfg.width,
+              src.cfg.height,
+            );
 
             #[cfg(feature = "check_asm")]
             assert_eq!(result, rust::sad_plane_internal($src, $dst, $cpu));
