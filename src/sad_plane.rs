@@ -28,10 +28,15 @@ pub(crate) mod rust {
   pub(crate) fn sad_plane_internal<T: Pixel>(
     src: &Plane<T>, dst: &Plane<T>, _cpu: CpuFeatureLevel,
   ) -> u64 {
+    let width = src.cfg.width;
+
     src
       .rows_iter()
       .zip(dst.rows_iter())
       .map(|(src, dst)| {
+        let src = src.get(..width).unwrap_or(src);
+        let dst = dst.get(..width).unwrap_or(dst);
+
         src
           .iter()
           .zip(dst.iter())
