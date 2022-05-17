@@ -28,6 +28,8 @@ pub(crate) mod rust {
   pub(crate) fn sad_plane_internal<T: Pixel>(
     src: &Plane<T>, dst: &Plane<T>, _cpu: CpuFeatureLevel,
   ) -> u64 {
+    debug_assert!(src.cfg.width == dst.cfg.width);
+
     let width = src.cfg.width;
 
     src
