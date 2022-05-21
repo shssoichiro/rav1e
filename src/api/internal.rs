@@ -13,7 +13,7 @@ use crate::api::lookahead::*;
 use crate::api::{EncoderConfig, EncoderStatus, FrameType, Opaque, Packet};
 use crate::color::ChromaSampling::Cs400;
 use crate::cpu_features::CpuFeatureLevel;
-use crate::denoise::{DftDenoiser, TB_MIDPOINT};
+use crate::denoise::{FftDenoiser, TB_MIDPOINT};
 use crate::dist::get_satd;
 use crate::encoder::*;
 use crate::frame::*;
@@ -247,7 +247,7 @@ pub(crate) struct ContextInner<T: Pixel> {
   /// Maps `output_frameno` to `gop_input_frameno_start`.
   pub(crate) gop_input_frameno_start: BTreeMap<u64, u64>,
   keyframe_detector: SceneChangeDetector<T>,
-  denoiser: Option<DftDenoiser<T>>,
+  denoiser: Option<FftDenoiser<T>>,
   pub(crate) config: Arc<EncoderConfig>,
   seq: Arc<Sequence>,
   pub(crate) rc_state: RCState,
@@ -294,7 +294,7 @@ impl<T: Pixel> ContextInner<T> {
         seq.clone(),
       ),
       denoiser: if enc.denoise_strength > 0 {
-        Some(DftDenoiser::new(
+        Some(FftDenoiser::new(
           enc.denoise_strength as f32 / 10.0,
           enc.width,
           enc.height,
