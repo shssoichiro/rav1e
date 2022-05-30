@@ -874,8 +874,15 @@ fn full_pixel_me<T: Pixel>(
       mvy_max,
       w,
       h,
-      // Use 24, since it is the largest range that x264 uses.
-      24,
+      // Use larger search ranges as the resolution increases,
+      // since greater motion is expected.
+      if fi.width * fi.height <= 1280 * 720 {
+        24
+      } else if fi.width * fi.height <= 1920 * 1080 {
+        32
+      } else {
+        48
+      },
     );
 
     if fi.config.speed_settings.motion.me_search_level
