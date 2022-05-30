@@ -119,6 +119,7 @@ impl SpeedSettings {
     if speed >= 1 {
       settings.lru_on_skip = false;
       settings.segmentation = SegmentationLevel::Simple;
+      settings.motion.me_search_level = SearchLevel::UnevenMultiHex;
     }
 
     if speed >= 2 {
@@ -154,6 +155,7 @@ impl SpeedSettings {
 
     if speed >= 7 {
       settings.prediction.prediction_modes = PredictionModesSetting::Simple;
+      settings.motion.me_search_level = SearchLevel::Diamond;
     }
 
     if speed >= 8 {
