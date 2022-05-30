@@ -24,7 +24,7 @@ use crate::FrameInvariants;
 
 use arrayvec::*;
 
-use crate::api::InterConfig;
+use crate::api::{InterConfig, SearchLevel};
 use crate::util::ILog;
 use std::ops::{Index, IndexMut};
 use std::sync::Arc;
@@ -850,7 +850,10 @@ fn full_pixel_me<T: Pixel>(
 
     try_cands(&subsets.subset_c, &mut best);
 
-    if best.rd.sad < thresh {
+    if fi.config.speed_settings.motion.me_search_level
+      < SearchLevel::UnevenMultiHex
+      || best.rd.sad < thresh
+    {
       return best;
     }
 
@@ -875,7 +878,8 @@ fn full_pixel_me<T: Pixel>(
       24,
     );
 
-    if !fi.config.speed_settings.motion.me_allow_full_search
+    if fi.config.speed_settings.motion.me_search_level
+      < SearchLevel::FullSearch
       || best.rd.sad < thresh
     {
       return best;

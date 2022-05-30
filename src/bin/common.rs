@@ -15,6 +15,7 @@ use crate::stats::MetricsEnabled;
 use crate::{ColorPrimaries, MatrixCoefficients, TransferCharacteristics};
 use clap::{AppSettings, Arg, ArgMatches, Command};
 use clap_complete::{generate, Shell};
+use debug_unreachable::debug_unreachable;
 use rav1e::prelude::*;
 use rav1e::version;
 use scan_fmt::scan_fmt;
@@ -388,6 +389,14 @@ pub fn parse_cli() -> Result<CliOptions, CliError> {
       Arg::new("OVERWRITE")
         .help("Overwrite output file.")
         .short('y')
+    )
+    .arg(
+      Arg::new("ME_LEVEL")
+        .hide(true)
+        .help("Slowest motion estimation level to test.")
+        .long("me-level")
+        .takes_value(true)
+        .possible_values(&["diamond", "umh", "full"])
     )
     .subcommand(Command::new("advanced")
                 .hide(true)
@@ -810,6 +819,16 @@ fn parse_config(matches: &ArgMatches) -> Result<EncoderConfig, CliError> {
   // Disables scene_detection
   if matches.is_present("NO_SCENE_DETECTION") {
     cfg.speed_settings.scene_detection_mode = SceneDetectionSpeed::None;
+  }
+
+  if let Some(me_level) = matches.value_of("ME_LEVEL") {
+    cfg.speed_settings.motion.me_search_level = match me_level {
+      "diamond" => SearchLevel::Diamond,
+      "umh" => SearchLevel::UnevenMultiHex,
+      "full" => SearchLevel::FullSearch,
+      // SAFETY: clap will error if the value is not in the supported list
+      _ => unsafe { debug_unreachable!() },
+    }
   }
 
   Ok(cfg)

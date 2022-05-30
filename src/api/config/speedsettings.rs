@@ -104,7 +104,7 @@ impl Default for SpeedSettings {
       motion: MotionSpeedSettings {
         include_near_mvs: true,
         use_satd_subpel: true,
-        me_allow_full_search: true,
+        me_search_level: SearchLevel::FullSearch,
       },
     }
   }
@@ -150,8 +150,6 @@ impl SpeedSettings {
 
       settings.transform.rdo_tx_decision = false;
       settings.transform.reduced_tx_set = true;
-
-      settings.motion.me_allow_full_search = false;
     }
 
     if speed >= 7 {
@@ -256,9 +254,8 @@ pub struct MotionSpeedSettings {
   /// Enabled is slower.
   pub include_near_mvs: bool,
 
-  /// Enable full search in some parts of motion estimation. Allowing full
-  /// search is slower.
-  pub me_allow_full_search: bool,
+  /// Determines the slowest search method that motion estimation will attempt.
+  pub me_search_level: SearchLevel,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -272,6 +269,19 @@ pub struct PredictionSpeedSettings {
 
   /// Use fine directional intra prediction
   pub fine_directional_intra: bool,
+}
+
+/// Available search types.
+#[derive(
+  Clone, Copy, Debug, PartialEq, PartialOrd, Serialize, Deserialize,
+)]
+pub enum SearchLevel {
+  /// Fast diamond search.
+  Diamond,
+  /// Accurate, optimized hexagonal search.
+  UnevenMultiHex,
+  /// Slow, exhaustive search.
+  FullSearch,
 }
 
 /// Range of block sizes to use.
