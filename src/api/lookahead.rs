@@ -178,13 +178,13 @@ pub(crate) fn estimate_importance_block_difference<T: Pixel>(
 #[hawktracer(estimate_inter_costs)]
 pub(crate) fn estimate_inter_costs<T: Pixel>(
   frame: Arc<Frame<T>>, ref_frame: Arc<Frame<T>>, bit_depth: usize,
-  mut config: EncoderConfig, sequence: Arc<Sequence>,
+  mut config: EncoderConfig, sequence: Sequence,
   buffer: Arc<[FrameMEStats; REF_FRAMES]>,
 ) -> f64 {
   config.low_latency = true;
   config.speed_settings.multiref = false;
   let inter_cfg = InterConfig::new(&config);
-  let last_fi = FrameInvariants::new_key_frame(Arc::new(config), sequence, 0);
+  let last_fi = FrameInvariants::new_key_frame(config, sequence, 0);
   let mut fi =
     FrameInvariants::new_inter_frame(&last_fi, &inter_cfg, 0, 1, 2, false)
       .unwrap();

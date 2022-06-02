@@ -565,8 +565,8 @@ pub struct SegmentationState {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FrameInvariants<T: Pixel> {
-  pub sequence: Arc<Sequence>,
-  pub config: Arc<EncoderConfig>,
+  pub sequence: Sequence,
+  pub config: EncoderConfig,
   pub width: usize,
   pub height: usize,
   pub render_width: u32,
@@ -715,7 +715,7 @@ impl<T: Pixel> FrameInvariants<T> {
   /// # Panics
   ///
   /// - If the size of `T` does not match the sequence's bit depth
-  pub fn new(config: Arc<EncoderConfig>, sequence: Arc<Sequence>) -> Self {
+  pub fn new(config: EncoderConfig, sequence: Sequence) -> Self {
     assert!(
       sequence.bit_depth <= mem::size_of::<T>() * 8,
       "bit depth cannot fit into u8"
@@ -831,8 +831,7 @@ impl<T: Pixel> FrameInvariants<T> {
   }
 
   pub fn new_key_frame(
-    config: Arc<EncoderConfig>, sequence: Arc<Sequence>,
-    gop_input_frameno_start: u64,
+    config: EncoderConfig, sequence: Sequence, gop_input_frameno_start: u64,
   ) -> Self {
     let tx_mode_select = config.speed_settings.transform.rdo_tx_decision;
     let mut fi = Self::new(config, sequence);
@@ -986,9 +985,7 @@ impl<T: Pixel> FrameInvariants<T> {
     if fi.show_frame || fi.showable_frame {
       let cur_frame_time = fi.frame_timestamp();
       // Increment the film grain seed for the next frame
-      if let Some(params) =
-        Arc::make_mut(&mut fi.config).get_film_grain_mut_at(cur_frame_time)
-      {
+      if let Some(params) = fi.config.get_film_grain_mut_at(cur_frame_time) {
         params.random_seed = params.random_seed.wrapping_add(3248);
         if params.random_seed == 0 {
           params.random_seed = DEFAULT_GS_SEED;
@@ -1007,7 +1004,7 @@ impl<T: Pixel> FrameInvariants<T> {
     Self {
       coded_frame_data: None,
 
-      sequence: self.sequence.clone(),
+      sequence: self.sequence,
       config: self.config.clone(),
       width: self.width,
       height: self.height,

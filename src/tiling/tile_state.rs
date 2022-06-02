@@ -162,7 +162,7 @@ impl<'a, T: Pixel> TileStateMut<'a, T> {
       input_hres: &fs.input_hres,
       input_qres: &fs.input_qres,
       deblock: &fs.deblock,
-      rec: TileMut::new(Arc::make_mut(&mut fs.rec), luma_rect),
+      rec: TileMut::new(Arc::get_mut(&mut fs.rec).unwrap(), luma_rect),
       qc: Default::default(),
       segmentation: &fs.segmentation,
       restoration: TileRestorationStateMut::new(
@@ -171,7 +171,8 @@ impl<'a, T: Pixel> TileStateMut<'a, T> {
         sb_width,
         sb_height,
       ),
-      me_stats: Arc::make_mut(&mut fs.frame_me_stats)
+      me_stats: Arc::get_mut(&mut fs.frame_me_stats)
+        .unwrap()
         .iter_mut()
         .map(|fmvs| {
           TileMEStatsMut::new(

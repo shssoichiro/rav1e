@@ -281,7 +281,7 @@ impl Config {
   /// [`Context`]: struct.Context.html
   pub fn new_context<T: Pixel>(&self) -> Result<Context<T>, InvalidConfig> {
     let inner = self.new_inner()?;
-    let config = (*inner.config).clone();
+    let config = inner.config.clone();
     let pool = self.new_thread_pool();
 
     Ok(Context { is_flushing: false, inner, pool, config })

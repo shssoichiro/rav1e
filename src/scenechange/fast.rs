@@ -114,7 +114,7 @@ impl<T: Pixel> SceneChangeDetector<T> {
 
 /// Scaling factor for frame in scene detection
 pub(super) fn detect_scale_factor<T: Pixel>(
-  sequence: &Arc<Sequence>, speed_mode: SceneDetectionSpeed,
+  sequence: &Sequence, speed_mode: SceneDetectionSpeed,
 ) -> Option<ScaleFunction<T>> {
   let small_edge =
     cmp::min(sequence.max_frame_height, sequence.max_frame_width) as usize;

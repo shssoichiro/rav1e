@@ -246,8 +246,8 @@ pub(crate) struct ContextInner<T: Pixel> {
   /// Maps `output_frameno` to `gop_input_frameno_start`.
   pub(crate) gop_input_frameno_start: BTreeMap<u64, u64>,
   keyframe_detector: SceneChangeDetector<T>,
-  pub(crate) config: Arc<EncoderConfig>,
-  seq: Arc<Sequence>,
+  pub(crate) config: EncoderConfig,
+  seq: Sequence,
   pub(crate) rc_state: RCState,
   maybe_prev_log_base_q: Option<i64>,
   /// The next `input_frameno` to be processed by lookahead.
@@ -268,7 +268,7 @@ impl<T: Pixel> ContextInner<T> {
     let maybe_ac_qi_max =
       if enc.quantizer < 255 { Some(enc.quantizer as u8) } else { None };
 
-    let seq = Arc::new(Sequence::new(enc));
+    let seq = Sequence::new(enc);
     let inter_cfg = InterConfig::new(enc);
     let lookahead_distance = inter_cfg.keyframe_lookahead_distance() as usize;
 
@@ -289,9 +289,9 @@ impl<T: Pixel> ContextInner<T> {
         enc.clone(),
         CpuFeatureLevel::default(),
         lookahead_distance,
-        seq.clone(),
+        seq,
       ),
-      config: Arc::new(enc.clone()),
+      config: enc.clone(),
       seq,
       rc_state: RCState::new(
         enc.width as i32,
@@ -318,7 +318,7 @@ impl<T: Pixel> ContextInner<T> {
   ) -> Result<(), EncoderStatus> {
     if let Some(ref mut frame) = frame {
       use crate::api::color::ChromaSampling;
-      let EncoderConfig { width, height, chroma_sampling, .. } = *self.config;
+      let EncoderConfig { width, height, chroma_sampling, .. } = self.config;
       let planes =
         if chroma_sampling == ChromaSampling::Cs400 { 1 } else { 3 };
       // Try to add padding
@@ -570,7 +570,7 @@ impl<T: Pixel> ContextInner<T> {
     if output_frameno_in_gop == 0 {
       let fi = FrameInvariants::new_key_frame(
         self.config.clone(),
-        self.seq.clone(),
+        self.seq,
         self.gop_input_frameno_start[&output_frameno],
       );
       Ok(Some(fi))

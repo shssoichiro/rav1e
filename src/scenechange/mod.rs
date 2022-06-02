@@ -92,7 +92,7 @@ pub struct SceneChangeDetector<T: Pixel> {
   /// The CPU feature level to be used.
   cpu_feature_level: CpuFeatureLevel,
   encoder_config: EncoderConfig,
-  sequence: Arc<Sequence>,
+  sequence: Sequence,
   /// Calculated intra costs for each input frame.
   /// These are cached for reuse later in rav1e.
   pub(crate) intra_costs: BTreeMap<u64, Box<[u32]>>,
@@ -101,7 +101,7 @@ pub struct SceneChangeDetector<T: Pixel> {
 impl<T: Pixel> SceneChangeDetector<T> {
   pub fn new(
     encoder_config: EncoderConfig, cpu_feature_level: CpuFeatureLevel,
-    lookahead_distance: usize, sequence: Arc<Sequence>,
+    lookahead_distance: usize, sequence: Sequence,
   ) -> Self {
     let bit_depth = encoder_config.bit_depth;
     let speed_mode = if encoder_config.low_latency {
