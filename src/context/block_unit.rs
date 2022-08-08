@@ -2018,3 +2018,21 @@ impl<'a> ContextWriter<'a> {
     new_cul_level
   }
 }
+
+/// Returns a value between 0 and the max luma value at the block's bit depth.
+pub(crate) fn get_block_avg_brightness<T: Pixel>(
+  frame: &Frame<T>, bo: PlaneBlockOffset, bs: BlockSize,
+) -> f64 {
+  let offset = bo.plane_offset(&frame.planes[0].cfg);
+  let data = frame.planes[0].data_origin();
+  let mut sum = 0u64;
+  let pix_count = bs.width() * bs.height();
+  let off_y = offset.y as usize;
+  let off_x = offset.x as usize;
+  for y in off_y..(off_y + bs.height()) {
+    for x in off_x..(off_x + bs.width()) {
+      sum += u16::cast_from(data[y * frame.planes[0].cfg.stride + x]) as u64;
+    }
+  }
+  sum as f64 / pix_count as f64
+}

@@ -9,6 +9,9 @@
 
 use std::cmp::Ordering;
 
+use v_frame::frame::Frame;
+use v_frame::prelude::clamp;
+
 use crate::context::*;
 use crate::header::PRIMARY_REF_NONE;
 use crate::partition::BlockSize;
@@ -237,8 +240,10 @@ pub fn select_segment<T: Pixel>(
   let frame_bo = ts.to_frame_block_offset(tile_bo);
   let scale = spatiotemporal_scale(fi, frame_bo, bsize);
 
-  let sidx = ts.segmentation.segment_map
-    [segment_idx_from_distortion(scale) as usize % 8] as u8;
+  let sidx = ts.segmentation.segment_map[segment_idx_from_distortion(
+    scale, ts.input, fi, bsize, frame_bo,
+  ) as usize
+    % 8] as u8;
   sidx..=sidx
 }
 
@@ -248,15 +253,48 @@ pub fn select_segment<T: Pixel>(
 // with the static segment maps.
 // i.e. These values were found to improve perceptual quality
 // without significantly impacting filesize.
-pub fn segment_idx_from_distortion(s: DistortionScale) -> u8 {
-  match f64::from(s) {
-    s if s >= 2.0 => 0,
-    s if s >= 1.5 => 1,
-    s if s >= 1.15 => 2,
-    s if s >= 0.9 => 3,
-    s if s >= 0.8 => 4,
-    s if s >= 0.7 => 5,
-    s if s >= 0.625 => 6,
+pub fn segment_idx_from_distortion<T: Pixel>(
+  d: DistortionScale, input: &Frame<T>, fi: &FrameInvariants<T>,
+  bsize: BlockSize, frame_bo: PlaneBlockOffset,
+) -> u8 {
+  let d = add_luma_bias(f64::from(d), input, fi, bsize, frame_bo);
+  match d {
+    d if d >= 2.0 => 0,
+    d if d >= 1.5 => 1,
+    d if d >= 1.15 => 2,
+    d if d >= 0.9 => 3,
+    d if d >= 0.8 => 4,
+    d if d >= 0.7 => 5,
+    d if d >= 0.625 => 6,
     _ => 7,
   }
+}
+
+// This code adds a darkness bias wherein we give more bits to darker areas of the video.
+// This aims to aid in detail preservation and reduce visible banding.
+fn add_luma_bias<T: Pixel>(
+  distortion: f64, input: &Frame<T>, fi: &FrameInvariants<T>,
+  bsize: BlockSize, frame_bo: PlaneBlockOffset,
+) -> f64 {
+  let luma = get_block_avg_brightness(input, frame_bo, bsize).round() as u16
+    >> (fi.config.bit_depth >> 8);
+  let luma = clamp(luma, 1, 255) as f64;
+
+  // Graphs for the given formulas can be found at https://www.desmos.com/calculator/jufuogreil
+  // to help visualize the goal behind why these numbers were chosen.
+  // Essentially, to create a curve where dark blocks become strengthened gradually more
+  // the darker they become, and dark blocks are strengthened more than light blocks
+  // are weakened.
+  let bias = if fi.config.is_hdr() {
+    // HDR content is in general darker than SDR content, so we want to give even more
+    // enhancement to dark blocks compared to the SDR bias.
+    // Given the less vibrant nature of encoded HDR, that is, when it is not tonemapped,
+    // we also want to give more bits in general to HDR, and this formula assists with that.
+    clamp((1.0 - luma.log(255f64)).mul_add(4.0, 0.8), 0.9, 2.0)
+  } else {
+    // Standard SDR dark bias
+    clamp((0.95 - luma.log(255f64)).mul_add(2.5, 1.0), 0.9, 1.5)
+  };
+
+  distortion * bias
 }

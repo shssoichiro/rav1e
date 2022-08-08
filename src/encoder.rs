@@ -1166,13 +1166,12 @@ impl<T: Pixel> FrameInvariants<T> {
   }
 
   // Assumes that we have already computed activity scales and distortion scales
-  pub fn compute_spatiotemporal_scores(&mut self) {
+  pub fn compute_spatiotemporal_scores(&mut self, input: &Frame<T>) {
     let coded_data = self.coded_frame_data.as_ref().unwrap();
-    let mut scores = vec![
-      DistortionScale::default();
-      coded_data.w_in_imp_b * coded_data.h_in_imp_b
-    ]
-    .into_boxed_slice();
+    let mut scores =
+      Vec::with_capacity(coded_data.w_in_imp_b * coded_data.h_in_imp_b);
+    let mut segments =
+      Vec::with_capacity(coded_data.w_in_imp_b * coded_data.h_in_imp_b);
     let bsize = BlockSize::from_width_and_height(
       IMPORTANCE_BLOCK_SIZE,
       IMPORTANCE_BLOCK_SIZE,
@@ -1184,17 +1183,20 @@ impl<T: Pixel> FrameInvariants<T> {
           y: y_in_imp_b << IMPORTANCE_BLOCK_TO_BLOCK_SHIFT,
         });
         let scale = spatiotemporal_scale(self, block_offset, bsize);
-        let imp_b_idx = y_in_imp_b * coded_data.w_in_imp_b + x_in_imp_b;
-        scores[imp_b_idx] = scale;
+        scores.push(scale);
+        segments.push(segment_idx_from_distortion(
+          scale,
+          input,
+          self,
+          bsize,
+          block_offset,
+        ));
       }
     }
 
-    let segments =
-      scores.iter().map(|&s| segment_idx_from_distortion(s)).collect();
-
     let coded_data = self.coded_frame_data.as_mut().unwrap();
-    coded_data.spatiotemporal_scores = scores;
-    coded_data.imp_b_segments = segments;
+    coded_data.spatiotemporal_scores = scores.into_boxed_slice();
+    coded_data.imp_b_segments = segments.into_boxed_slice();
   }
 
   #[inline(always)]
