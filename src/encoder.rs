@@ -784,7 +784,7 @@ impl<T: Pixel> CodedFrameData<T> {
       .iter()
       .zip(self.block_brightnesses.iter())
       .map(|(score, brightness)| {
-        let score = adjust_for_lightness(*score, *brightness);
+        let score = adjust_spatiotemporal_for_lightness(*score, *brightness);
         // We need to maintain the overall range of values within the frame
         DistortionScale::from(score.max(frame_score_min).min(frame_score_max))
       })

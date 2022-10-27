@@ -10,7 +10,6 @@
 
 #![allow(non_camel_case_types)]
 
-use crate::activity::adjust_for_lightness;
 use crate::api::*;
 use crate::cdef::*;
 use crate::context::*;
@@ -455,10 +454,7 @@ pub fn distortion_scale<T: Pixel>(
   let y = frame_bo.0.y >> IMPORTANCE_BLOCK_TO_BLOCK_SHIFT;
 
   let coded_data = fi.coded_frame_data.as_ref().unwrap();
-  DistortionScale::from(adjust_for_lightness(
-    f64::from(coded_data.distortion_scales[y * coded_data.w_in_imp_b + x]),
-    coded_data.block_brightnesses[y * coded_data.w_in_imp_b + x],
-  ))
+  coded_data.distortion_scales[y * coded_data.w_in_imp_b + x]
 }
 
 /// # Panics
