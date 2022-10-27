@@ -314,9 +314,7 @@ mod ssim_boost_tests {
   }
 }
 
-pub(crate) fn adjust_spatiotemporal_for_lightness(
-  score: f64, mean_lightness: f32,
-) -> f64 {
+pub(crate) fn adjust_for_lightness(score: f64, mean_lightness: f32) -> f64 {
   // We want to use a lower scale for low luma areas,
   // because lower scales are given more bits.
   let multiplier = if mean_lightness >= 0.75 {
