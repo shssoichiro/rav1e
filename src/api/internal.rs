@@ -8,7 +8,9 @@
 // PATENTS file, you can obtain it at www.aomedia.org/license/patent.
 #![deny(missing_docs)]
 
-use crate::activity::{compute_block_brightnesses, ActivityMask};
+use crate::activity::{
+  adjust_for_lightness, compute_block_brightnesses, ActivityMask,
+};
 use crate::api::lookahead::*;
 use crate::api::{
   EncoderConfig, EncoderStatus, FrameType, Opaque, Packet, T35,
@@ -23,6 +25,7 @@ use crate::rate::{
   RCState, FRAME_NSUBTYPES, FRAME_SUBTYPE_I, FRAME_SUBTYPE_P,
   FRAME_SUBTYPE_SEF,
 };
+use crate::rdo::DistortionScale;
 use crate::scenechange::SceneChangeDetector;
 use crate::stats::EncoderStats;
 use crate::tiling::Area;
@@ -1190,6 +1193,10 @@ impl<T: Pixel> ContextInner<T> {
     }
 
     if !output_framenos.is_empty() {
+      let block_brightnesses = compute_block_brightnesses(
+        &self.frame_data[&self.output_frameno].as_ref().unwrap().fs.input,
+        &self.config,
+      );
       let fi = &mut self
         .frame_data
         .get_mut(&output_framenos[0])
@@ -1209,6 +1216,36 @@ impl<T: Pixel> ContextInner<T> {
           intra_cost as f64,
         );
       }
+
+      // Adjust for low-luma bias
+      coded_data.block_brightnesses = block_brightnesses;
+      let flat_scores = coded_data
+        .distortion_scales
+        .iter()
+        .copied()
+        .map(f64::from)
+        .collect::<Box<_>>();
+      // Have to use `fold` since `f64` is not `Ord`
+      let frame_score_max =
+        flat_scores
+          .iter()
+          .fold(1.0f64, |max, &s| if s > max { s } else { max });
+      let frame_score_min =
+        flat_scores
+          .iter()
+          .fold(1.0f64, |min, &s| if s < min { s } else { min });
+      coded_data.distortion_scales = flat_scores
+        .iter()
+        .zip(coded_data.block_brightnesses.iter())
+        .map(|(score, brightness)| {
+          let score = adjust_for_lightness(*score, *brightness);
+          // We need to maintain the overall range of values within the frame
+          DistortionScale::from(
+            score.max(frame_score_min).min(frame_score_max),
+          )
+        })
+        .collect();
+
       #[cfg(feature = "dump_lookahead_data")]
       {
         use byteorder::{NativeEndian, WriteBytesExt};
@@ -1324,9 +1361,6 @@ impl<T: Pixel> ContextInner<T> {
             frame_data.fi.sequence.bit_depth,
             &mut coded_data.activity_scales,
           );
-          // Brightnesses MUST be computed before spatiotemporal scores
-          coded_data.block_brightnesses =
-            compute_block_brightnesses(frame, &self.config);
           log_isqrt_mean_scale = coded_data.compute_spatiotemporal_scores();
         } else {
           coded_data.activity_mask = ActivityMask::default();
