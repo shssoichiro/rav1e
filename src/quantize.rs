@@ -336,23 +336,24 @@ impl QuantizationContext {
     // coefficients, most bits will be spent on coding its magnitude.
     // To that end, we want to bias more toward rounding to zero for
     // that tail of zeroes and ones than we do for the larger coefficients.
-    let mut level_mode = 1;
+    let mut level_mode = self.ac_quant;
+    let divu0 = (self.ac_mul_add.0, self.ac_mul_add.1 + self.ac_offset0, self.ac_mul_add.2);
+    let divu1 = (self.ac_mul_add.0, self.ac_mul_add.1 + self.ac_offset1, self.ac_mul_add.2);
     for &pos in scan.iter().take(eob).skip(1) {
       let coeff = i32::cast_from(coeffs[pos as usize]) << self.log_tx_scale;
       let abs_coeff = coeff.unsigned_abs();
 
-      let level0 = divu_pair(abs_coeff, self.ac_mul_add);
-      let offset = if level0 > 1 - level_mode {
-        self.ac_offset1
+      let muladd = if abs_coeff > level_mode {
+        divu1
       } else {
-        self.ac_offset0
+        divu0
       };
 
-      let abs_qcoeff: u32 = divu_pair(abs_coeff + offset, self.ac_mul_add);
-      if level_mode != 0 && abs_qcoeff == 0 {
-        level_mode = 0;
+      let abs_qcoeff: u32 = divu_pair(abs_coeff, muladd);
+      if level_mode == self.ac_quant && abs_qcoeff == 0 {
+        level_mode = self.ac_quant * 2;
       } else if abs_qcoeff > 1 {
-        level_mode = 1;
+        level_mode = self.ac_quant;
       }
 
       qcoeffs[pos as usize] = T::cast_from(copysign(abs_qcoeff, coeff));
