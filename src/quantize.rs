@@ -96,28 +96,62 @@ pub struct QuantizationContext {
   dc_quant: u32,
   dc_offset: u32,
   dc_mul_add: (u32, u32, u32),
+  dc_mul_add16: (u16, u16, u16),
 
   ac_quant: u32,
   ac_offset_eob: u32,
   ac_offset0: u32,
   ac_offset1: u32,
   ac_mul_add: (u32, u32, u32),
+  ac_mul_add16: (u16, u16, u16),
 }
 
 fn divu_gen(d: u32) -> (u32, u32, u32) {
   let nbits = (mem::size_of_val(&d) as u64) * 8;
   let m = nbits - d.leading_zeros() as u64 - 1;
   if (d & (d - 1)) == 0 {
-    (0xFFFF_FFFF, 0xFFFF_FFFF, m as u32)
+    (1, 0, m as u32)
   } else {
     let d = d as u64;
     let t = (1u64 << (m + nbits)) / d;
     let r = (t * d + d) & ((1 << nbits) - 1);
     if r <= 1u64 << m {
-      (t as u32 + 1, 0u32, m as u32)
+      (t as u32 + 1, 0u32, (m + nbits) as u32)
     } else {
-      (t as u32, t as u32, m as u32)
+      (t as u32, 1, (m + nbits) as u32)
     }
+  }
+}
+
+// https://github.com/vectorclass/version2/blob/c6efbf4d952450c089844f20b243650e1b0686ca/vectori128.h#L6251
+/* Mathematical formula, used for unsigned division with fixed divisor:
+* (From Terje Mathisen, unpublished)
+* x = dividend
+* d = divisor
+* w = integer word size, bits
+* b = floor(log2(d)) = bit_scan_reverse(d)
+* f = 2^(w+b) / d                                [exact division]
+* If f is an integer then d is a power of 2 then go to case A
+* If the fractional part of f is < 0.5 then go to case B
+* If the fractional part of f is > 0.5 then go to case C
+* Case A:  [shift only]
+* result = x >> b
+* Case B:  [round down f and compensate by adding one to x]
+* result = ((x+1)*floor(f)) >> (w+b)             [high part of unsigned multiplication with 2w bits]
+* Case C:  [round up f, no compensation for rounding error]
+* result = (x*ceil(f)) >> (w+b)                  [high part of unsigned multiplication with 2w bits]
+*/
+fn divu_gen16(d: u16) -> (u16, u16, u16) {
+  let nbits = (mem::size_of_val(&d) as u16) * 8;
+  let b = nbits - d.leading_zeros() as u16 - 1;
+  let d = d as u32;
+  let f = 1u32 << (nbits + b);
+  if f % d == 0 {
+    (1, 0, b)
+  } else if f % d < d / 2 {
+    ((f / d) as u16, 1, nbits + b)
+  } else {
+    ((f / d) as u16 + 1, 0, nbits + b)
   }
 }
 
@@ -129,7 +163,16 @@ const fn divu_pair(x: u32, d: (u32, u32, u32)) -> u32 {
   let a = a as u64;
   let b = b as u64;
 
-  (((a * x + b) >> 32) >> shift) as u32
+  ((a * (x + b)) >> shift) as u32
+}
+
+#[inline]
+const fn divu_pair16(x: u16, d: (u16, u16, u16)) -> u16 {
+  let (a, b, shift) = d;
+  let shift = shift as u64;
+  let a = a as u32;
+
+  ((a * (x + b) as u32) >> shift) as u16
 }
 
 #[inline]
@@ -152,6 +195,17 @@ mod test {
       for x in 0..1000 {
         let ab = divu_gen(d as u32);
         assert_eq!(x / d, divu_pair(x, ab));
+      }
+    }
+  }
+  
+  #[test]
+  fn test_divu_pair16() {
+    for d in 1..1024 {
+      for x in 0..1000 {
+        let ab = divu_gen16(d as u16);
+        println!("{:?}", (x, d, ab));
+        assert_eq!(x / d, divu_pair16(x, ab));
       }
     }
   }
@@ -200,9 +254,11 @@ impl QuantizationContext {
 
     self.dc_quant = dc_q(qindex, dc_delta_q, bit_depth) as u32;
     self.dc_mul_add = divu_gen(self.dc_quant);
+    self.dc_mul_add16 = divu_gen16(self.dc_quant as u16);
 
     self.ac_quant = ac_q(qindex, ac_delta_q, bit_depth) as u32;
     self.ac_mul_add = divu_gen(self.ac_quant);
+    self.ac_mul_add16 = divu_gen16(self.ac_quant as u16);
 
     // All of these biases were derived by measuring the cost of coding
     // a zero vs coding a one on any given coefficient position, or, in
