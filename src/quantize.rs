@@ -9,6 +9,21 @@
 
 #![allow(non_upper_case_globals)]
 
+unsafe fn m256_divu_pair_32(
+  x: __m256i, d: (__m256i, __m256i, __m128i),
+) -> __m256i {
+  let (a, b, shift) = d;
+  let x = _mm256_add_epi32(x, b);
+  let lower = x;
+  let upper = _mm256_srli_epi64(x, 32);
+
+  let lower = _mm256_srli_epi64(_mm256_mul_epu32(a, lower), 32);
+  let upper = _mm256_mul_epu32(a, upper);
+
+  let ret = _mm256_blend_epi16(lower, upper, 0xCC);
+  _mm256_srl_epi32(ret, shift)
+}
+
 cfg_if::cfg_if! {
   if #[cfg(nasm_x86_64)] {
     pub use crate::asm::x86::quantize::*;
@@ -16,6 +31,8 @@ cfg_if::cfg_if! {
     pub use self::rust::*;
   }
 }
+
+use std::arch::x86_64::*;
 
 use crate::transform::{TxSize, TxType};
 use crate::util::*;
@@ -96,62 +113,28 @@ pub struct QuantizationContext {
   dc_quant: u32,
   dc_offset: u32,
   dc_mul_add: (u32, u32, u32),
-  dc_mul_add16: (u16, u16, u16),
 
   ac_quant: u32,
   ac_offset_eob: u32,
   ac_offset0: u32,
   ac_offset1: u32,
   ac_mul_add: (u32, u32, u32),
-  ac_mul_add16: (u16, u16, u16),
 }
 
 fn divu_gen(d: u32) -> (u32, u32, u32) {
   let nbits = (mem::size_of_val(&d) as u64) * 8;
   let m = nbits - d.leading_zeros() as u64 - 1;
   if (d & (d - 1)) == 0 {
-    (1, 0, m as u32)
+    (0xFFFF_FFFF, 1, m as u32)
   } else {
     let d = d as u64;
     let t = (1u64 << (m + nbits)) / d;
     let r = (t * d + d) & ((1 << nbits) - 1);
     if r <= 1u64 << m {
-      (t as u32 + 1, 0u32, (m + nbits) as u32)
+      (t as u32 + 1, 0u32, m as u32)
     } else {
-      (t as u32, 1, (m + nbits) as u32)
+      (t as u32, 1u32, m as u32)
     }
-  }
-}
-
-// https://github.com/vectorclass/version2/blob/c6efbf4d952450c089844f20b243650e1b0686ca/vectori128.h#L6251
-/* Mathematical formula, used for unsigned division with fixed divisor:
-* (From Terje Mathisen, unpublished)
-* x = dividend
-* d = divisor
-* w = integer word size, bits
-* b = floor(log2(d)) = bit_scan_reverse(d)
-* f = 2^(w+b) / d                                [exact division]
-* If f is an integer then d is a power of 2 then go to case A
-* If the fractional part of f is < 0.5 then go to case B
-* If the fractional part of f is > 0.5 then go to case C
-* Case A:  [shift only]
-* result = x >> b
-* Case B:  [round down f and compensate by adding one to x]
-* result = ((x+1)*floor(f)) >> (w+b)             [high part of unsigned multiplication with 2w bits]
-* Case C:  [round up f, no compensation for rounding error]
-* result = (x*ceil(f)) >> (w+b)                  [high part of unsigned multiplication with 2w bits]
-*/
-fn divu_gen16(d: u16) -> (u16, u16, u16) {
-  let nbits = (mem::size_of_val(&d) as u16) * 8;
-  let b = nbits - d.leading_zeros() as u16 - 1;
-  let d = d as u32;
-  let f = 1u32 << (nbits + b);
-  if f % d == 0 {
-    (1, 0, b)
-  } else if f % d < d / 2 {
-    ((f / d) as u16, 1, nbits + b)
-  } else {
-    ((f / d) as u16 + 1, 0, nbits + b)
   }
 }
 
@@ -163,16 +146,7 @@ const fn divu_pair(x: u32, d: (u32, u32, u32)) -> u32 {
   let a = a as u64;
   let b = b as u64;
 
-  ((a * (x + b)) >> shift) as u32
-}
-
-#[inline]
-const fn divu_pair16(x: u16, d: (u16, u16, u16)) -> u16 {
-  let (a, b, shift) = d;
-  let shift = shift as u64;
-  let a = a as u32;
-
-  ((a * (x + b) as u32) >> shift) as u16
+  (((a * (x + b)) >> 32) >> shift) as u32
 }
 
 #[inline]
@@ -198,14 +172,56 @@ mod test {
       }
     }
   }
-  
+
   #[test]
-  fn test_divu_pair16() {
-    for d in 1..1024 {
-      for x in 0..1000 {
-        let ab = divu_gen16(d as u16);
-        println!("{:?}", (x, d, ab));
-        assert_eq!(x / d, divu_pair16(x, ab));
+  fn test_m256_divu_pair_32() {
+    unsafe {
+      for d in 1..10240 {
+        for x in 0..10000 {
+          let pair = divu_gen(d as u32);
+          let actual = m256_divu_pair_32(
+            _mm256_set1_epi32(x),
+            (
+              _mm256_set1_epi32(pair.0 as i32),
+              _mm256_set1_epi32(pair.1 as i32),
+              _mm_set_epi32(0, 0, 0, pair.2 as i32),
+            ),
+          );
+          let ret = _mm256_extract_epi32(actual, 0);
+          assert_eq!(
+            ret,
+            x / d,
+            "{} / {} ({}, {}, {}): 0",
+            x,
+            d,
+            pair.0,
+            (pair.1 as u64) as i64,
+            pair.2
+          );
+          let ret = _mm256_extract_epi32(actual, 1);
+          assert_eq!(
+            ret,
+            x / d,
+            "{} / {} ({}, {}, {}): 1",
+            x,
+            d,
+            pair.0,
+            (pair.1 as u64) as i64,
+            pair.2
+          );
+          let ret = _mm256_extract_epi32(actual, 2);
+          assert_eq!(ret, x / d, "{} / {} ({}): 2", x, d, pair.1);
+          let ret = _mm256_extract_epi32(actual, 3);
+          assert_eq!(ret, x / d, "{} / {} ({}): 3", x, d, pair.1);
+          let ret = _mm256_extract_epi32(actual, 4);
+          assert_eq!(ret, x / d, "{} / {} ({}): 4", x, d, pair.1);
+          let ret = _mm256_extract_epi32(actual, 5);
+          assert_eq!(ret, x / d, "{} / {} ({}): 5", x, d, pair.1);
+          let ret = _mm256_extract_epi32(actual, 6);
+          assert_eq!(ret, x / d, "{} / {} ({}): 6", x, d, pair.1);
+          let ret = _mm256_extract_epi32(actual, 7);
+          assert_eq!(ret, x / d, "{} / {} ({}): 7", x, d, pair.1);
+        }
       }
     }
   }
@@ -254,11 +270,9 @@ impl QuantizationContext {
 
     self.dc_quant = dc_q(qindex, dc_delta_q, bit_depth) as u32;
     self.dc_mul_add = divu_gen(self.dc_quant);
-    self.dc_mul_add16 = divu_gen16(self.dc_quant as u16);
 
     self.ac_quant = ac_q(qindex, ac_delta_q, bit_depth) as u32;
     self.ac_mul_add = divu_gen(self.ac_quant);
-    self.ac_mul_add16 = divu_gen16(self.ac_quant as u16);
 
     // All of these biases were derived by measuring the cost of coding
     // a zero vs coding a one on any given coefficient position, or, in
@@ -317,13 +331,81 @@ impl QuantizationContext {
       (self.ac_quant as usize - self.ac_offset_eob as usize)
         .align_power_of_two_and_shift(self.log_tx_scale),
     );
-    let eob = {
+    //let data = ArrayVec::<T, 1024>::from_iter(scan.iter().map(|&i| coeffs[i as usize]));
+    //let data = data.as_slice();
+    let mut data_storage = Aligned::new([T::zero(); 32 * 32]);
+
+    let data = &mut data_storage.data;
+    scan.iter().zip(data.iter_mut()).for_each(|(&i, datum)| {
+      *datum = unsafe { *coeffs.get_unchecked(i as usize) };
+    });
+    let data = &data[..scan.len()];
+    let eob = if mem::size_of::<T>() == 2 {
+      unsafe {
+        let bounds = data.as_ptr_range();
+        let mut ptr = bounds.end.offset(-16);
+        let mut eob = 0;
+        let deadzone_v = _mm256_set1_epi16(i16::cast_from(deadzone) - 1);
+        while ptr >= bounds.start {
+          let data = _mm256_loadu_si256(ptr as *const _);
+          let abs = _mm256_abs_epi16(data);
+          let cmp = _mm256_cmpgt_epi16(abs, deadzone_v);
+          let mask = _mm256_movemask_epi8(cmp);
+          if mask != 0 {
+            eob = ptr.offset_from(bounds.start) as usize
+              + (32 - mask.leading_zeros() as usize) / 2;
+            break;
+          }
+          ptr = ptr.offset(-16);
+        }
+        if eob == 0 {
+          eob = usize::from(qcoeffs[0] != T::cast_from(0));
+        }
+        eob
+      }
+    } else if mem::size_of::<T>() == 4 {
+      unsafe {
+        let bounds = data.as_ptr_range();
+        let mut ptr = bounds.end.offset(-8);
+        let mut eob = 0;
+        let deadzone_v = _mm256_set1_epi32(i32::cast_from(deadzone) - 1);
+        while ptr >= bounds.start {
+          let data = _mm256_loadu_si256(ptr as *const _);
+          let abs = _mm256_abs_epi32(data);
+          let cmp = _mm256_cmpgt_epi32(abs, deadzone_v);
+          let mask = _mm256_movemask_epi8(cmp);
+          if mask != 0 {
+            eob = ptr.offset_from(bounds.start) as usize
+              + (32 - mask.leading_zeros() as usize) / 4;
+            break;
+          }
+          ptr = ptr.offset(-8);
+        }
+        if eob == 0 {
+          eob = usize::from(qcoeffs[0] != T::cast_from(0));
+        }
+        eob
+      }
+    } else {
       // We skip the DC coefficient since it has its own quantizer index.
       let eob_minus_two =
         scan[1..].iter().rposition(|&i| coeffs[i as usize].abs() >= deadzone);
       eob_minus_two
         .map(|n| n + 2)
         .unwrap_or_else(|| usize::from(qcoeffs[0] != T::cast_from(0)))
+    };
+
+    // We skip the DC coefficient since it has its own quantizer index.
+    debug_assert_eq!(eob, {
+      let eob_minus_two =
+        scan[1..].iter().rposition(|&i| coeffs[i as usize].abs() >= deadzone);
+      eob_minus_two
+        .map(|n| n + 2)
+        .unwrap_or_else(|| usize::from(qcoeffs[0] != T::cast_from(0)))
+    });
+
+    if eob <= 1 {
+      return eob;
     };
 
     // Here we use different rounding biases depending on whether we've
@@ -336,41 +418,115 @@ impl QuantizationContext {
     // coefficients, most bits will be spent on coding its magnitude.
     // To that end, we want to bias more toward rounding to zero for
     // that tail of zeroes and ones than we do for the larger coefficients.
-    let mut level_mode = self.ac_quant;
-    let divu0 = (self.ac_mul_add.0, self.ac_mul_add.1 + self.ac_offset0, self.ac_mul_add.2);
-    let divu1 = (self.ac_mul_add.0, self.ac_mul_add.1 + self.ac_offset1, self.ac_mul_add.2);
-    for &pos in scan.iter().take(eob).skip(1) {
-      let coeff = i32::cast_from(coeffs[pos as usize]) << self.log_tx_scale;
-      let abs_coeff = coeff.unsigned_abs();
 
-      let muladd = if abs_coeff > level_mode {
-        divu1
-      } else {
-        divu0
-      };
+    if mem::size_of::<T>() == 2 || mem::size_of::<T>() == 4 {
+      unsafe {
+        let tmp = qcoeffs[0];
+        let bounds = data[..eob].as_ptr_range();
+        let mut ptr = bounds.start as *const u8;
+        let mut output = qcoeffs[..eob].as_mut_ptr() as *mut u8;
 
-      let abs_qcoeff: u32 = divu_pair(abs_coeff, muladd);
-      if level_mode == self.ac_quant && abs_qcoeff == 0 {
-        level_mode = self.ac_quant * 2;
-      } else if abs_qcoeff > 1 {
-        level_mode = self.ac_quant;
+        let mul = _mm256_set1_epi32(self.ac_mul_add.0 as i32);
+        let shift = _mm_set_epi32(0, 0, 0, self.ac_mul_add.2 as i32);
+        let ac_offset0 =
+          _mm256_set1_epi32(self.ac_mul_add.1 as i32 + self.ac_offset0 as i32);
+        let ac_offset1 =
+          _mm256_set1_epi32(self.ac_mul_add.1 as i32 + self.ac_offset1 as i32);
+
+        let threshold =
+          _mm256_set1_epi32(self.ac_quant as i32 - self.ac_offset1 as i32);
+        // We can overread here as the data is always padded to a 32-bit boundary
+        while ptr < bounds.end as *const u8 {
+          let coeff = if mem::size_of::<T>() == 2 {
+            _mm256_cvtepi16_epi32(_mm_loadu_si128(ptr as *const _))
+          } else {
+            _mm256_loadu_si256(ptr as *const _)
+          };
+          //let coeff = _mm256_sll_epi32(coeff, _mm_setr_epi32(0, 0, 0, self.log_tx_scale as i32));
+          let abs_coeff = _mm256_abs_epi32(_mm256_sll_epi32(
+            coeff,
+            _mm_set_epi32(0, 0, 0, self.log_tx_scale as i32),
+          ));
+
+          let offset = {
+            // If they would all be zero under heavy rounding, use heavy rounding - Otherwise, use normal.
+            let cmp =
+              _mm256_movemask_epi8(_mm256_cmpgt_epi32(threshold, abs_coeff));
+            if cmp == 0 {
+              ac_offset1
+            } else {
+              ac_offset0
+            }
+          };
+          let abs_qcoeff = m256_divu_pair_32(abs_coeff, (mul, offset, shift));
+          let qcoeff = _mm256_sign_epi32(abs_qcoeff, coeff);
+
+          if mem::size_of::<T>() == 2 {
+            let qcoeff = _mm256_permute4x64_epi64(
+              _mm256_packs_epi32(qcoeff, _mm256_setzero_si256()),
+              0b11_01_10_00,
+            );
+            _mm_storeu_si128(
+              output as *mut _,
+              _mm256_extracti128_si256(qcoeff, 0),
+            );
+          } else {
+            _mm256_storeu_si256(output as *mut _, qcoeff);
+          };
+          ptr = ptr.add(8 * mem::size_of::<T>());
+          output = output.add(8 * mem::size_of::<T>());
+        }
+
+        let mut tail = qcoeffs[..eob].as_ptr_range().end as *mut T;
+        while tail < output as *mut T {
+          *tail = T::zero();
+          tail = tail.add(1);
+        }
+
+        qcoeffs[0] = tmp;
       }
+    } else {
+      let mut level_mode = self.ac_quant;
+      let divu0 = (
+        self.ac_mul_add.0,
+        self.ac_mul_add.1 + self.ac_offset0,
+        self.ac_mul_add.2,
+      );
+      let divu1 = (
+        self.ac_mul_add.0,
+        self.ac_mul_add.1 + self.ac_offset1,
+        self.ac_mul_add.2,
+      );
+      for ((_pos, &coeff), qcoeff) in scan[1..eob]
+        .iter()
+        .zip(data[1..eob].iter())
+        .zip(qcoeffs[1..eob].iter_mut())
+      {
+        let coeff = i32::cast_from(coeff) << self.log_tx_scale;
+        let abs_coeff = coeff.unsigned_abs();
 
-      qcoeffs[pos as usize] = T::cast_from(copysign(abs_qcoeff, coeff));
+        let next_level_mode = if abs_coeff < self.ac_quant - self.ac_offset0 {
+          self.ac_quant * 2
+        } else if abs_coeff < self.ac_quant * 2 - self.ac_offset0 {
+          level_mode
+        } else {
+          self.ac_quant
+        };
+
+        let muladd = if abs_coeff > level_mode { divu1 } else { divu0 };
+
+        let abs_qcoeff: u32 = divu_pair(abs_coeff, muladd);
+
+        *qcoeff = T::cast_from(copysign(abs_qcoeff, coeff));
+        level_mode = next_level_mode;
+      }
     }
 
     // Rather than zeroing the tail in scan order, assume that qcoeffs is
     // pre-filled with zeros.
-
-    // Check the eob is correct
-    debug_assert_eq!(
-      eob,
-      scan
-        .iter()
-        .rposition(|&i| qcoeffs[i as usize] != T::cast_from(0))
-        .map(|n| n + 1)
-        .unwrap_or(0)
-    );
+    if eob > 0 {
+      assert!(!qcoeffs[eob - 1].is_zero());
+    }
 
     eob
   }

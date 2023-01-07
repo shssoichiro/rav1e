@@ -49,6 +49,7 @@ use std::sync::Arc;
 use std::{fmt, io, mem};
 
 use crate::rayon::iter::*;
+use crate::scan_order::av1_scan_orders;
 use rust_hawktracer::*;
 
 #[allow(dead_code)]
@@ -1509,10 +1510,17 @@ pub fn encode_tx_block<T: Pixel, W: Writer>(
   // SAFETY: We write to the array below before reading from it.
   let mut rcoeffs_storage: Aligned<[T::Coeff; 32 * 32]> =
     unsafe { Aligned::uninitialized() };
+  // SAFETY: We write to the array below before reading from it.
+  let mut raster_qcoeffs_storage: Aligned<[MaybeUninit<T::Coeff>; 32 * 32]> =
+    unsafe { Aligned::uninitialized() };
   let residual = &mut residual_storage.data[..tx_size.area()];
   let coeffs = &mut coeffs_storage.data[..tx_size.area()];
   let qcoeffs = init_slice_repeat_mut(
     &mut qcoeffs_storage.data[..coded_tx_area],
+    T::Coeff::cast_from(0),
+  );
+  let raster_qcoeffs = init_slice_repeat_mut(
+    &mut raster_qcoeffs_storage.data[..coded_tx_area],
     T::Coeff::cast_from(0),
   );
   let rcoeffs = &mut rcoeffs_storage.data[..coded_tx_area];
@@ -1546,6 +1554,7 @@ pub fn encode_tx_block<T: Pixel, W: Writer>(
   );
 
   let eob = ts.qc.quantize(coeffs, qcoeffs, tx_size, tx_type);
+  let qcoeffs = &qcoeffs[..eob];
 
   let has_coeff = if need_recon_pixel || rdo_type.needs_coeff_rate() {
     debug_assert!((((fi.w_in_b - frame_bo.0.x) << MI_SIZE_LOG2) >> xdec) >= 4);
@@ -1577,10 +1586,16 @@ pub fn encode_tx_block<T: Pixel, W: Writer>(
     true
   };
 
+  let scan = av1_scan_orders[tx_size as usize][tx_type as usize].scan;
+
+  for (&pos, qcoeff) in scan.iter().zip(qcoeffs) {
+    unsafe { *raster_qcoeffs.get_unchecked_mut(pos as usize) = *qcoeff };
+  }
+
   // Reconstruct
   dequantize(
     qidx,
-    qcoeffs,
+    raster_qcoeffs,
     eob,
     rcoeffs,
     tx_size,

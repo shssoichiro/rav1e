@@ -175,7 +175,7 @@ unsafe fn rav1e_sad_wxh_hbd_avx2<const W: usize>(
           )
         })
       })
-      .reduce(|a, b| unsafe { _mm256_add_epi32(a, b) })
+      .reduce(|a, b| _mm256_add_epi32(a, b))
       .unwrap();
     mm256_sum_i32(sum) as u32
   }
@@ -290,7 +290,7 @@ pub fn get_sad<T: Pixel>(
 ) -> u32 {
   let bsize_opt = BlockSize::from_width_and_height_opt(w, h);
 
-  let call_rust = || -> u32 { rust::get_sad(dst, src, w, h, bit_depth, cpu) };
+  let call_rust = || -> u32 { rust::get_sad(src, dst, w, h, bit_depth, cpu) };
 
   #[cfg(feature = "check_asm")]
   let ref_dist = call_rust();
@@ -344,7 +344,7 @@ pub fn get_satd<T: Pixel>(
 ) -> u32 {
   let bsize_opt = BlockSize::from_width_and_height_opt(w, h);
 
-  let call_rust = || -> u32 { rust::get_satd(dst, src, w, h, bit_depth, cpu) };
+  let call_rust = || -> u32 { rust::get_satd(src, dst, w, h, bit_depth, cpu) };
 
   #[cfg(feature = "check_asm")]
   let ref_dist = call_rust();

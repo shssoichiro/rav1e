@@ -179,7 +179,7 @@ unsafe fn rav1e_cdef_dist_kernel_8x8_hbd_avx2(
       .reduce(|a, b| _mm_add_epi16(a, b))
       .unwrap();
 
-    let m32 = _mm256_cvtepi16_epi32(res);
+    let m32 = _mm256_cvtepu16_epi32(res);
     mm256_sum_i32(m32) as u32
   }
   unsafe fn mpadd32(

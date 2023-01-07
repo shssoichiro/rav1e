@@ -778,15 +778,15 @@ impl<'a> ContextWriter<'a> {
 
   pub fn txb_init_levels<T: Coefficient>(
     &self, coeffs: &[T], height: usize, levels: &mut [u8],
-    levels_stride: usize,
+    levels_stride: usize, scan: &[u16],
   ) {
-    // Coefficients and levels are transposed from how they work in the spec
-    for (coeffs_col, levels_col) in
-      coeffs.chunks_exact(height).zip(levels.chunks_exact_mut(levels_stride))
-    {
-      for (coeff, level) in coeffs_col.iter().zip(levels_col) {
-        *level = coeff.abs().min(T::cast_from(127)).as_();
-      }
+    for (&coeff_idx, &coeff) in scan.iter().zip(coeffs) {
+      let col: usize = coeff_idx as usize / height;
+      let pos: usize = coeff_idx as usize + (col * (levels_stride - height));
+      unsafe {
+        *levels.get_unchecked_mut(pos) =
+          coeff.abs().min(T::cast_from(127)).as_()
+      };
     }
   }
 
@@ -904,20 +904,21 @@ impl<'a> ContextWriter<'a> {
   }
 
   pub fn get_nz_map_contexts(
-    &self, levels: &mut [u8], scan: &[u16], eob: u16, tx_size: TxSize,
+    &self, levels: &[u8], scan: &[u16], eob: u16, tx_size: TxSize,
     tx_class: TxClass, coeff_contexts: &mut [i8],
   ) {
     let bhl = Self::get_txb_bhl(tx_size);
     let area = av1_get_coded_tx_size(tx_size).area();
-    for i in 0..eob {
-      let pos = scan[i as usize];
-      coeff_contexts[pos as usize] = Self::get_nz_map_ctx(
+    for (i, (coeff_context, &pos)) in
+      coeff_contexts.iter_mut().zip(scan).enumerate()
+    {
+      *coeff_context = Self::get_nz_map_ctx(
         levels,
         pos as usize,
         bhl,
         area,
-        i as usize,
-        i == eob - 1,
+        i,
+        i as u16 == eob - 1,
         tx_size,
         tx_class,
       ) as i8;

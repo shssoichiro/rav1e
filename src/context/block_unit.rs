@@ -1796,13 +1796,8 @@ impl<'a> ContextWriter<'a> {
       &av1_scan_orders[tx_size as usize][tx_type as usize].scan[..eob];
     let height = av1_get_coded_tx_size(tx_size).height();
 
-    // Create a slice with coeffs in scan order
-    let mut coeffs_storage: Aligned<ArrayVec<T, { 32 * 32 }>> =
-      Aligned::new(ArrayVec::new());
-    let coeffs = &mut coeffs_storage.data;
-    coeffs.extend(scan.iter().map(|&scan_idx| coeffs_in[scan_idx as usize]));
-
-    let cul_level: u32 = coeffs.iter().map(|c| u32::cast_from(c.abs())).sum();
+    let cul_level: u32 =
+      coeffs_in.iter().map(|c| u32::cast_from(c.abs())).sum();
 
     let txs_ctx = Self::get_txsize_entropy_ctx(tx_size);
     let txb_ctx = self.bc.get_txb_ctx(
@@ -1830,7 +1825,7 @@ impl<'a> ContextWriter<'a> {
     let levels: &mut [u8] =
       &mut levels_buf[TX_PAD_TOP * (height + TX_PAD_HOR)..];
 
-    self.txb_init_levels(coeffs_in, height, levels, height + TX_PAD_HOR);
+    self.txb_init_levels(coeffs_in, height, levels, height + TX_PAD_HOR, scan);
 
     let tx_class = tx_type_to_class[tx_type as usize];
     let plane_type = usize::from(plane != 0);
@@ -1849,10 +1844,10 @@ impl<'a> ContextWriter<'a> {
 
     self.encode_eob(eob, tx_size, tx_class, txs_ctx, plane_type, w);
     self.encode_coeffs(
-      coeffs, levels, scan, eob, tx_size, tx_class, txs_ctx, plane_type, w,
+      coeffs_in, levels, scan, eob, tx_size, tx_class, txs_ctx, plane_type, w,
     );
     let cul_level =
-      self.encode_coeff_signs(coeffs, w, plane_type, txb_ctx, cul_level);
+      self.encode_coeff_signs(coeffs_in, w, plane_type, txb_ctx, cul_level);
     self.bc.set_coeff_context(plane, bo, tx_size, xdec, ydec, cul_level as u8);
     true
   }
@@ -1914,7 +1909,7 @@ impl<'a> ContextWriter<'a> {
   }
 
   fn encode_coeffs<T: Coefficient, W: Writer>(
-    &mut self, coeffs: &[T], levels: &mut [u8], scan: &[u16], eob: usize,
+    &mut self, coeffs: &[T], levels: &[u8], scan: &[u16], eob: usize,
     tx_size: TxSize, tx_class: TxClass, txs_ctx: usize, plane_type: usize,
     w: &mut W,
   ) {
@@ -1933,9 +1928,14 @@ impl<'a> ContextWriter<'a> {
 
     let bhl = Self::get_txb_bhl(tx_size);
 
-    for (c, (&pos, &v)) in scan.iter().zip(coeffs.iter()).enumerate().rev() {
+    for (c, ((&pos, &v), &coeff_ctx)) in scan
+      .iter()
+      .zip(coeffs.iter())
+      .zip(coeff_contexts.data.iter())
+      .enumerate()
+      .rev()
+    {
       let pos = pos as usize;
-      let coeff_ctx = coeff_contexts.data[pos];
       let level = v.abs();
 
       if c == eob - 1 {
