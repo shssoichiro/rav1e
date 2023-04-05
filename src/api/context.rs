@@ -16,8 +16,8 @@ use crate::api::util::*;
 use bitstream_io::*;
 
 use crate::encoder::*;
-use crate::frame::*;
 use crate::util::Pixel;
+use v_frame::frame::Frame;
 
 use std::fmt;
 use std::io;
@@ -50,10 +50,11 @@ impl<T: Pixel> Context<T> {
   /// ```
   #[inline]
   pub fn new_frame(&self) -> Frame<T> {
-    Frame::new(
+    Frame::new_with_padding(
       self.config.width,
       self.config.height,
       self.config.chroma_sampling,
+      0,
     )
   }
 

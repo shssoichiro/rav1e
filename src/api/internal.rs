@@ -1078,23 +1078,7 @@ impl<T: Pixel> ContextInner<T> {
     // The first one should be the current output frame.
     assert_eq!(output_framenos[0], self.output_frameno);
 
-    // First, initialize them all with zeros.
-    for output_frameno in output_framenos.iter() {
-      let fi = &mut self
-        .frame_data
-        .get_mut(output_frameno)
-        .unwrap()
-        .as_mut()
-        .unwrap()
-        .fi;
-      for x in
-        fi.coded_frame_data.as_mut().unwrap().block_importances.iter_mut()
-      {
-        *x = 0.;
-      }
-    }
-
-    // Now compute and propagate the block importances from the end. The
+    // Compute and propagate the block importances from the end. The
     // current output frame will get its block importances from the future
     // frames.
     let bsize = BlockSize::from_width_and_height(

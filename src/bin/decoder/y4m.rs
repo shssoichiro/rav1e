@@ -10,8 +10,7 @@
 
 use std::io::Read;
 
-use crate::color::ChromaSampling::Cs400;
-use crate::decoder::{DecodeError, Decoder, FrameBuilder, VideoDetails};
+use crate::decoder::{DecodeError, Decoder, VideoDetails};
 use crate::Frame;
 use rav1e::prelude::*;
 
@@ -42,36 +41,21 @@ impl Decoder for y4m::Decoder<Box<dyn Read + Send>> {
     }
   }
 
-  fn read_frame<T: Pixel, F: FrameBuilder<T>>(
-    &mut self, ctx: &F, cfg: &VideoDetails,
-  ) -> Result<Frame<T>, DecodeError> {
-    let bytes = self.get_bytes_per_sample();
+  fn read_frame<T: Pixel>(&mut self) -> Result<Frame<T>, DecodeError> {
+    let details = self.get_video_details();
     self
       .read_frame()
       .map(|frame| {
-        let mut f = ctx.new_frame();
-
-        let (chroma_width, _) =
-          cfg.chroma_sampling.get_chroma_dimensions(cfg.width, cfg.height);
-
-        f.planes[0].copy_from_raw_u8(
-          frame.get_y_plane(),
-          cfg.width * bytes,
-          bytes,
-        );
-        if cfg.chroma_sampling != Cs400 {
-          f.planes[1].copy_from_raw_u8(
-            frame.get_u_plane(),
-            chroma_width * bytes,
-            bytes,
-          );
-          f.planes[2].copy_from_raw_u8(
-            frame.get_v_plane(),
-            chroma_width * bytes,
-            bytes,
-          );
+        // SAFETY: We do not reuse the input frame after this,
+        // we essentially are moving it into the output Frame
+        unsafe {
+          Frame::new_zerocopy(
+            [frame.get_y_plane(), frame.get_u_plane(), frame.get_v_plane()],
+            details.width,
+            details.height,
+            details.chroma_sampling,
+          )
         }
-        f
       })
       .map_err(Into::into)
   }

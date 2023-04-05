@@ -190,3 +190,6 @@ members = [".", "ivf"]
 
 [package.metadata.docs.rs]
 no-default-features = true
+
+[patch.crates-io]
+v_frame = { path = "../v_frame" }

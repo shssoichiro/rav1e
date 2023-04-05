@@ -98,18 +98,12 @@ use crate::stats::*;
 use rav1e::config::CpuFeatureLevel;
 use rav1e::prelude::*;
 
-use crate::decoder::{Decoder, FrameBuilder, VideoDetails};
+use crate::decoder::{Decoder, VideoDetails};
 use crate::muxer::*;
 use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::process::exit;
 use std::sync::Arc;
-
-impl<T: Pixel> FrameBuilder<T> for Context<T> {
-  fn new_frame(&self) -> Frame<T> {
-    Context::new_frame(self)
-  }
-}
 
 struct Source<D: Decoder> {
   limit: usize,
@@ -163,7 +157,7 @@ impl<D: Decoder> Source<D> {
       }
     }
 
-    match self.input.read_frame(ctx, &video_info) {
+    match self.input.read_frame() {
       Ok(frame) => {
         match video_info.bit_depth {
           8 | 10 | 12 => {}

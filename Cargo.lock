@@ -1765,8 +1765,6 @@ dependencies = [
 [[package]]
 name = "v_frame"
 version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "148c23ce3c8dae5562911cba1c264eaa5e31e133e0d5d08455409de9dd540358"
 dependencies = [
  "cfg-if",
  "new_debug_unreachable",
