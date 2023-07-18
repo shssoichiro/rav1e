@@ -776,7 +776,7 @@ impl<'a> ContextWriter<'a> {
     (tx_size.sqr() as usize + tx_size.sqr_up() as usize + 1) >> 1
   }
 
-  pub fn txb_init_levels<T: Coefficient>(
+  pub(crate) fn txb_init_levels<T: Coefficient>(
     &self, coeffs: &[T], height: usize, levels: &mut [u8],
     levels_stride: usize,
   ) {
@@ -785,7 +785,7 @@ impl<'a> ContextWriter<'a> {
       coeffs.chunks_exact(height).zip(levels.chunks_exact_mut(levels_stride))
     {
       for (coeff, level) in coeffs_col.iter().zip(levels_col) {
-        *level = coeff.abs().min(T::cast_from(127)).as_();
+        *level = coeff.abs().min(T::cast_from(3)).as_();
       }
     }
   }
@@ -815,26 +815,26 @@ impl<'a> ContextWriter<'a> {
     t
   }
 
-  pub fn get_nz_mag(levels: &[u8], bhl: usize, tx_class: TxClass) -> usize {
+  fn get_nz_mag(levels: &[u8], bhl: usize, tx_class: TxClass) -> usize {
     // Levels are transposed from how they work in the spec
 
     // May version.
     // Note: AOMMIN(level, 3) is useless for decoder since level < 3.
-    let mut mag = cmp::min(3, levels[1]); // { 1, 0 }
-    mag += cmp::min(3, levels[(1 << bhl) + TX_PAD_HOR]); // { 0, 1 }
+    let mut mag = levels[1]; // { 1, 0 }
+    mag += levels[(1 << bhl) + TX_PAD_HOR]; // { 0, 1 }
 
     if tx_class == TX_CLASS_2D {
-      mag += cmp::min(3, levels[(1 << bhl) + TX_PAD_HOR + 1]); // { 1, 1 }
-      mag += cmp::min(3, levels[2]); // { 2, 0 }
-      mag += cmp::min(3, levels[(2 << bhl) + (2 << TX_PAD_HOR_LOG2)]); // { 0, 2 }
+      mag += levels[(1 << bhl) + TX_PAD_HOR + 1]; // { 1, 1 }
+      mag += levels[2]; // { 2, 0 }
+      mag += levels[(2 << bhl) + (2 << TX_PAD_HOR_LOG2)]; // { 0, 2 }
     } else if tx_class == TX_CLASS_VERT {
-      mag += cmp::min(3, levels[2]); // { 2, 0 }
-      mag += cmp::min(3, levels[3]); // { 3, 0 }
-      mag += cmp::min(3, levels[4]); // { 4, 0 }
+      mag += levels[2]; // { 2, 0 }
+      mag += levels[3]; // { 3, 0 }
+      mag += levels[4]; // { 4, 0 }
     } else {
-      mag += cmp::min(3, levels[(2 << bhl) + (2 << TX_PAD_HOR_LOG2)]); // { 0, 2 }
-      mag += cmp::min(3, levels[(3 << bhl) + (3 << TX_PAD_HOR_LOG2)]); // { 0, 3 }
-      mag += cmp::min(3, levels[(4 << bhl) + (4 << TX_PAD_HOR_LOG2)]); // { 0, 4 }
+      mag += levels[(2 << bhl) + (2 << TX_PAD_HOR_LOG2)]; // { 0, 2 }
+      mag += levels[(3 << bhl) + (3 << TX_PAD_HOR_LOG2)]; // { 0, 3 }
+      mag += levels[(4 << bhl) + (4 << TX_PAD_HOR_LOG2)]; // { 0, 4 }
     }
 
     mag as usize
@@ -903,8 +903,8 @@ impl<'a> ContextWriter<'a> {
     Self::get_nz_map_ctx_from_stats(stats, coeff_idx, bhl, tx_size, tx_class)
   }
 
-  pub fn get_nz_map_contexts(
-    &self, levels: &mut [u8], scan: &[u16], eob: u16, tx_size: TxSize,
+  pub(crate) fn get_nz_map_contexts(
+    &self, levels: &[u8], scan: &[u16], eob: u16, tx_size: TxSize,
     tx_class: TxClass, coeff_contexts: &mut [i8],
   ) {
     let bhl = Self::get_txb_bhl(tx_size);

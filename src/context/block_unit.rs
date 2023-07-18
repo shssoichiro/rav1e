@@ -1914,7 +1914,7 @@ impl<'a> ContextWriter<'a> {
   }
 
   fn encode_coeffs<T: Coefficient, W: Writer>(
-    &mut self, coeffs: &[T], levels: &mut [u8], scan: &[u16], eob: usize,
+    &mut self, coeffs: &[T], levels: &[u8], scan: &[u16], eob: usize,
     tx_size: TxSize, tx_class: TxClass, txs_ctx: usize, plane_type: usize,
     w: &mut W,
   ) {
