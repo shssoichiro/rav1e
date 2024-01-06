@@ -165,6 +165,12 @@ const fn copysign(value: u32, signed: i32) -> i32 {
   }
 }
 
+#[inline]
+pub const fn get_qm_level(qindex: u8, first: u8, last: u8) -> u8 {
+  first
+    + ((qindex as usize * (last + 1 - first) as usize) / QINDEX_RANGE) as u8
+}
+
 #[cfg(test)]
 mod test {
   use super::*;
@@ -211,6 +217,19 @@ mod test {
     ];
     for &tx_size in tx_sizes.iter() {
       assert!(tx_size.1 == get_log_tx_scale(tx_size.0));
+    }
+  }
+
+  #[test]
+  fn test_get_qm_level() {
+    for qindex in 0..=255 {
+      for min in 0..=15 {
+        for max in min..=15 {
+          let result = get_qm_level(qindex, min, max);
+          assert!(result >= min);
+          assert!(result <= max);
+        }
+      }
     }
   }
 }

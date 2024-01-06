@@ -89,6 +89,8 @@ pub struct EncoderConfig {
   pub bitrate: i32,
   /// Metric to tune the quality for.
   pub tune: Tune,
+  /// Minimum and maximum flatness values for quant matrices, if enabled.
+  pub qm_params: Option<(u8, u8)>,
   /// Parameters for grain synthesis.
   pub film_grain_params: Option<Vec<GrainTableSegment>>,
   /// Number of tiles horizontally. Must be a power of two.
@@ -166,6 +168,7 @@ impl EncoderConfig {
       quantizer: 100,
       bitrate: 0,
       tune: Tune::default(),
+      qm_params: None,
       film_grain_params: None,
       tile_cols: 0,
       tile_rows: 0,

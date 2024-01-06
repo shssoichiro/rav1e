@@ -738,10 +738,10 @@ impl<W: io::Write> UncompressedHeader for BitWriter<W, BigEndian> {
     assert!(fi.base_q_idx > 0);
     self.write(8, fi.base_q_idx)?; // base_q_idx
     self.write_delta_q(fi.dc_delta_q[0])?;
+    let diff_uv_delta = fi.dc_delta_q[1] != fi.dc_delta_q[2]
+      || fi.ac_delta_q[1] != fi.ac_delta_q[2];
     if fi.sequence.chroma_sampling != ChromaSampling::Cs400 {
       assert!(fi.ac_delta_q[0] == 0);
-      let diff_uv_delta = fi.dc_delta_q[1] != fi.dc_delta_q[2]
-        || fi.ac_delta_q[1] != fi.ac_delta_q[2];
       self.write_bit(diff_uv_delta)?;
       self.write_delta_q(fi.dc_delta_q[1])?;
       self.write_delta_q(fi.ac_delta_q[1])?;
@@ -750,7 +750,17 @@ impl<W: io::Write> UncompressedHeader for BitWriter<W, BigEndian> {
         self.write_delta_q(fi.ac_delta_q[2])?;
       }
     }
-    self.write_bit(false)?; // no qm
+    // quant matrix
+    self.write_bit(fi.quant_matrix.is_some())?;
+    if let Some(qm) = fi.quant_matrix {
+      self.write(4, qm[0])?;
+      self.write(4, qm[1])?;
+      if diff_uv_delta {
+        self.write(4, qm[2])?;
+      } else {
+        debug_assert_eq!(qm[1], qm[2]);
+      }
+    }
 
     // segmentation
     self.write_segment_data(fi, &fs.segmentation)?;

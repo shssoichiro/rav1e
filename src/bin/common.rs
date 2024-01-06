@@ -198,6 +198,16 @@ pub struct CliOptions {
   /// Mainly for debugging purposes.
   #[clap(long, help_heading = "ENCODE SETTINGS")]
   pub high_bitdepth: bool,
+  /// Enables quantization matrices.
+  /// Generally improves compression with little speed penalty.
+  #[clap(long, help_heading = "ENCODE SETTINGS")]
+  pub enable_qm: bool,
+  /// Minimum flatness for quantization matrices.
+  #[clap(long, default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=15), help_heading = "ENCODE SETTINGS")]
+  pub qm_min: u8,
+  /// Maximum flatness for quantization matrices.
+  #[clap(long, default_value_t = 8, value_parser = clap::value_parser!(u8).range(0..=15), help_heading = "ENCODE SETTINGS")]
+  pub qm_max: u8,
 
   /// Pixel range
   #[clap(long, value_parser, help_heading = "VIDEO METADATA")]
@@ -671,6 +681,13 @@ fn parse_config(matches: &CliOptions) -> Result<EncoderConfig, CliError> {
 
   if cfg.tune == Tune::Psychovisual {
     cfg.speed_settings.transform.tx_domain_distortion = false;
+  }
+
+  if matches.enable_qm {
+    if matches.qm_max < matches.qm_min {
+      panic!("qm-min must be less than or equal to qm-max");
+    }
+    cfg.qm_params = Some((matches.qm_min, matches.qm_max));
   }
 
   cfg.tile_cols = matches.tile_cols;

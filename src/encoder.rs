@@ -654,6 +654,7 @@ pub struct FrameInvariants<T: Pixel> {
   pub base_q_idx: u8,
   pub dc_delta_q: [i8; 3],
   pub ac_delta_q: [i8; 3],
+  pub quant_matrix: Option<[u8; 3]>,
   pub lambda: f64,
   pub me_lambda: f64,
   pub dist_scale: [DistortionScale; 3],
@@ -921,6 +922,7 @@ impl<T: Pixel> FrameInvariants<T> {
       base_q_idx: config.quantizer as u8,
       dc_delta_q: [0; 3],
       ac_delta_q: [0; 3],
+      quant_matrix: None,
       lambda: 0.0,
       dist_scale: Default::default(),
       me_lambda: 0.0,
@@ -1176,6 +1178,7 @@ impl<T: Pixel> FrameInvariants<T> {
       base_q_idx: self.base_q_idx,
       dc_delta_q: self.dc_delta_q,
       ac_delta_q: self.ac_delta_q,
+      quant_matrix: self.quant_matrix,
       lambda: self.lambda,
       me_lambda: self.me_lambda,
       dist_scale: self.dist_scale,
@@ -1252,6 +1255,23 @@ impl<T: Pixel> FrameInvariants<T> {
       qps.lambda * ((1 << (2 * (self.sequence.bit_depth - 8))) as f64);
     self.me_lambda = self.lambda.sqrt();
     self.dist_scale = qps.dist_scale.map(DistortionScale::from);
+    self.quant_matrix = if let Some((qm_min, qm_max)) = self.config.qm_params {
+      Some([
+        get_qm_level(self.base_q_idx, qm_min, qm_max),
+        get_qm_level(
+          (base_q_idx + self.ac_delta_q[1] as i32) as u8,
+          qm_min,
+          qm_max,
+        ),
+        get_qm_level(
+          (base_q_idx + self.ac_delta_q[2] as i32) as u8,
+          qm_min,
+          qm_max,
+        ),
+      ])
+    } else {
+      None
+    };
 
     match self.cdef_search_method {
       CDEFSearchMethod::PickFromQ => {
